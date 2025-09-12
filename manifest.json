@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "ChromeAiAgent",
+  "version": "1.0.0",
+  "description": "AI agent interface with support for multiple online LLM providers",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "activeTab",
+    "tabs",
+    "identity",
+    "cookies",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://models.inference.ai.azure.com/*",
+    "https://models.github.ai/*",
+    "https://api.groq.com/*",
+    "https://api.deepseek.com/*",
+    "https://api.perplexity.ai/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://claude.ai/*",
+    "https://*.openai.azure.com/*",
+    "https://*.ai.azure.com/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "oauth2": {
+    "client_id": "your-google-client-id.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/generative-language"
+    ]
+  },
+  "action": {
+    "default_title": "Open ChromeAiAgent"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChromeAiAgent</title>
+  <link rel="stylesheet" href="css/sidepanel.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <h1 class="title">🤖 ChromeAiAgent</h1>
+        <div id="providerStatus" class="provider-status">
+          <span class="provider-info">
+            <span id="currentProvider" class="current-provider">-</span>
+            <span class="provider-separator">•</span>
+            <span id="currentModel" class="current-model">-</span>
+          </span>
+        </div>
+        <div id="pageContext" class="page-context" style="display: none;">
+          <span class="page-icon">📄</span>
+          <span id="pageTitle" class="page-title"></span>
+          <button id="refreshPageContextBtn" class="page-refresh-btn" title="Refresh page context">🔄</button>
+        </div>
+        <div id="connectionStatus" class="connection-status"></div>
+      </div>
+      <div class="header-right">
+        <button id="newChatBtn" class="icon-button" title="New Chat">
+          ➕
+        </button>
+        <button id="logsBtn" class="icon-button" title="Chat Logs">
+          📊
+        </button>
+        <button id="settingsBtn" class="icon-button" title="Settings">
+          ⚙️
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="chatView" class="main-content">
+      <!-- Messages Container -->
+      <div id="messagesContainer" class="messages-container">
+        <div class="welcome-message">
+          <div class="welcome-icon">🤖</div>
+          <h2>Welcome to ChromeAiAgent</h2>
+          <p id="welcomeText">Start a conversation with your AI assistant. I can help you with questions about this page or anything else!</p>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <div class="input-container">
+          <textarea 
+            id="messageInput" 
+            placeholder="Type your message here..."
+            rows="1"
+          ></textarea>
+          <button id="sendBtn" class="send-button" disabled>
+            <span class="send-icon">➤</span>
+          </button>
+          <button id="stopBtn" class="stop-button" style="display: none;">
+            <span class="stop-icon">⏹</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings View -->
+    <div id="settingsView" class="main-content" style="display: none;">
+      <div class="settings-container">
+        <div class="settings-header">
+          <button id="backBtn" class="back-button">← Back to Chat</button>
+          <h2>AI Provider Settings</h2>
+          <button id="closeSettingsBtn" class="close-button" title="Close Settings">✕</button>
+        </div>
+
+        <form id="settingsForm" class="settings-form">
+          <div class="form-group">
+            <label for="providerSelect">AI Provider</label>
+            <div class="provider-select-container">
+              <select id="providerSelect">
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="claude.ai">Claude</option>
+                <option value="github">GitHub Models</option>
+                <option value="groq">Groq</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="perplexity">Perplexity</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="azure">Azure OpenAI</option>
+                <option value="local">Local Models (LM Studio/Ollama)</option>
+                <option value="custom">Custom Endpoint</option>
+              </select>
+              <button type="button" id="setDefaultProviderBtn" class="set-default-btn" title="Set as default provider">
+                Set Default
+              </button>
+            </div>
+            <div id="defaultProviderIndicator" class="default-indicator" style="display: none;">
+              <span class="default-text">✓ Default provider</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="hostInput">API Host</label>
+            <input type="text" id="hostInput" placeholder="https://api.openai.com/v1/chat/completions">
+            <small class="form-help">Auto-filled based on provider selection</small>
+          </div>
+
+          <div class="form-group">
+            <label for="authModeSelect">Authentication Mode</label>
+            <select id="authModeSelect">
+              <option value="api">API Key</option>
+              <option value="web">Web Session</option>
+            </select>
+            <small class="form-help">Choose between API key authentication or web session authentication</small>
+          </div>
+
+          <div class="form-group" id="apiKeyGroup">
+            <label for="apiKeyInput">API Key</label>
+            <div class="auth-container">
+              <input type="password" id="apiKeyInput" placeholder="Enter your API key">
+              <div class="oauth-buttons">
+                <button type="button" id="oauthSignInBtn" class="oauth-btn" style="display: none;">
+                  <span class="oauth-icon">🔐</span>
+                  <span class="oauth-text">Sign in with Provider</span>
+                </button>
+                <button type="button" id="oauthSignOutBtn" class="oauth-btn oauth-signout" style="display: none;">
+                  <span class="oauth-icon">🚪</span>
+                  <span class="oauth-text">Sign out</span>
+                </button>
+              </div>
+              <div id="authStatus" class="auth-status" style="display: none;"></div>
+            </div>
+            <small class="form-help">Use API key or sign in with web authentication</small>
+          </div>
+
+          <div class="form-group" id="webSessionGroup" style="display: none;">
+            <label for="sessionStatus">Web Session</label>
+            <div class="auth-container">
+              <div id="sessionStatus" class="session-status">
+                <span id="sessionStatusText">No active session</span>
+                <button type="button" id="refreshSessionBtn" class="refresh-session-btn" title="Check session status">
+                  🔄
+                </button>
+              </div>
+              <div class="session-buttons">
+                <button type="button" id="openWebAuthBtn" class="web-auth-btn">
+                  <span class="oauth-icon">🌐</span>
+                  <span class="oauth-text">Open Provider Website</span>
+                </button>
+                <button type="button" id="captureSessionBtn" class="capture-session-btn">
+                  <span class="oauth-icon">📸</span>
+                  <span class="oauth-text">Capture Session</span>
+                </button>
+                <button type="button" id="clearSessionBtn" class="clear-session-btn" style="display: none;">
+                  <span class="oauth-icon">🗑️</span>
+                  <span class="oauth-text">Clear Session</span>
+                </button>
+              </div>
+            </div>
+            <small class="form-help">Authenticate via the provider's website and capture your session</small>
+          </div>
+
+          <div class="form-group">
+            <label for="modelSelect">Model</label>
+            <div class="model-input-container">
+              <select id="modelSelect" disabled>
+                <option value="">Loading models...</option>
+              </select>
+              <button type="button" id="refreshModelsBtn" class="refresh-models-btn" title="Refresh available models">
+                🔄
+              </button>
+              <div id="modelLoader" class="model-loader" style="display: none;">
+                <div class="loader-spinner"></div>
+                <span>Loading models...</span>
+              </div>
+            </div>
+            <small class="form-help">
+              <span id="modelHelpText">Click refresh to fetch available models or enter model name manually</span>
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="temperatureInput">Temperature</label>
+            <input type="range" id="temperatureInput" min="0" max="2" step="0.1" value="0.7">
+            <span id="temperatureValue">0.7</span>
+          </div>
+
+          <div class="form-group">
+            <label for="maxTokensInput">Max Tokens</label>
+            <input type="number" id="maxTokensInput" min="1" max="4096" value="2048">
+          </div>
+
+          <div class="form-actions">
+            <button type="button" id="testConnectionBtn" class="secondary-button">
+              Test Connection
+            </button>
+            <button type="submit" class="primary-button">
+              Save Settings
+            </button>
+          </div>
+        </form>
+
+        <div class="provider-info">
+          <h3>Provider Information</h3>
+          <div id="providerDetails" class="provider-details">
+            <!-- Provider-specific information will be shown here -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Logs View -->
+    <div id="logsView" class="main-content" style="display: none;">
+      <div class="logs-container">
+        <div class="logs-header">
+          <h2>Chat Logs</h2>
+          <button id="closeLogsBtn" class="close-button" title="Close Logs">✕</button>
+        </div>
+
+        <!-- Log Controls -->
+        <div class="log-controls">
+          <div class="log-search">
+            <input type="text" id="logSearchInput" placeholder="Search logs..." class="search-input">
+            <button id="searchLogsBtn" class="search-button">🔍</button>
+          </div>
+          
+          <div class="log-filters">
+            <select id="providerFilter" class="filter-select">
+              <option value="">All Providers</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="claude.ai">Claude</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="github">GitHub</option>
+              <option value="groq">Groq</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="perplexity">Perplexity</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+            
+            <select id="statusFilter" class="filter-select">
+              <option value="">All Status</option>
+              <option value="true">Success</option>
+              <option value="false">Error</option>
+            </select>
+            
+            <select id="sourceFilter" class="filter-select">
+              <option value="">All Sources</option>
+              <option value="popup">Popup</option>
+              <option value="sidepanel">Side Panel</option>
+              <option value="mcp">MCP</option>
+            </select>
+          </div>
+
+          <div class="log-actions">
+            <button id="refreshLogsBtn" class="action-button">Refresh</button>
+            <button id="exportLogsBtn" class="action-button">Export</button>
+            <button id="clearLogsBtn" class="action-button danger">Clear All</button>
+          </div>
+        </div>
+
+        <!-- Log Results -->
+        <div class="log-results">
+          <div id="logStats" class="log-stats">
+            <!-- Stats will be populated by JS -->
+          </div>
+          
+          <div id="logsList" class="logs-list">
+            <!-- Logs will be populated by JS -->
+          </div>
+          
+          <div id="logsPagination" class="logs-pagination">
+            <!-- Pagination will be populated by JS -->
+          </div>
+        </div>
+
+        <!-- Log Settings -->
+        <div class="log-settings">
+          <h3>Log Settings</h3>
+          <div class="form-group">
+            <label for="maxLogsInput">Maximum Logs to Store</label>
+            <input type="number" id="maxLogsInput" min="100" max="10000" step="100" value="1000">
+            <button id="saveLogSettingsBtn" class="action-button">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/sidepanel.js"></script>
+</body>
+</html>

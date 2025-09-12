@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 350px;
+      min-height: 400px;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      background: #fff;
+    }
+    
+    .header {
+      background: #f8f9fa;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e0e0e0;
+      font-size: 12px;
+    }
+    
+    .page-info {
+      color: #5f6368;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .current-config {
+      color: #1a73e8;
+      font-weight: 500;
+    }
+    
+    .provider-selector {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e0e0e0;
+      background: #fafafa;
+    }
+    
+    .form-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    
+    .form-row select,
+    .form-row input {
+      flex: 1;
+      padding: 6px 8px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    
+    .form-row label {
+      display: block;
+      font-size: 11px;
+      color: #5f6368;
+      margin-bottom: 2px;
+    }
+    
+    .mini-chat {
+      padding: 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .chat-messages {
+      flex: 1;
+      min-height: 150px;
+      max-height: 150px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 12px;
+      background: #fafafa;
+    }
+    
+    .welcome-message {
+      color: #5f6368;
+      font-size: 12px;
+      text-align: center;
+      margin-top: 50px;
+    }
+    
+    .message {
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    
+    .message.user {
+      text-align: right;
+      color: #1a73e8;
+    }
+    
+    .message.assistant {
+      color: #333;
+    }
+    
+    .input-container {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .input-container textarea {
+      flex: 1;
+      padding: 8px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 12px;
+      resize: none;
+      font-family: inherit;
+    }
+    
+    .send-btn {
+      padding: 8px 12px;
+      background: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    
+    .send-btn:hover {
+      background: #1557b0;
+    }
+    
+    .send-btn:disabled {
+      background: #dadce0;
+      cursor: not-allowed;
+    }
+    
+    .actions {
+      padding: 12px 16px;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      gap: 8px;
+    }
+    
+    .action-btn {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      background: #f8f9fa;
+      color: #3c4043;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .action-btn:hover {
+      background: #f1f3f4;
+    }
+    
+    .action-btn.primary {
+      background: #1a73e8;
+      color: white;
+      border-color: #1a73e8;
+    }
+    
+    .action-btn.primary:hover {
+      background: #1557b0;
+    }
+    
+    .refresh-btn {
+      padding: 6px 8px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      background: #f8f9fa;
+      color: #5f6368;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    
+    .refresh-btn:hover {
+      background: #f1f3f4;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header with page info and current config -->
+  <div class="header">
+    <div class="page-info">
+      <span>📄</span>
+      <span id="pageTitle">Loading...</span>
+    </div>
+    <div class="current-config">
+      <span id="currentProvider">Provider</span> • <span id="currentModel">Model</span>
+    </div>
+  </div>
+  
+  <!-- Provider and Model Selector -->
+  <div class="provider-selector">
+    <div class="form-row">
+      <div style="flex: 1;">
+        <label>Provider</label>
+        <select id="providerSelect">
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="claude.ai">Claude</option>
+          <option value="github">GitHub</option>
+          <option value="groq">Groq</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="perplexity">Perplexity</option>
+          <option value="azure">Azure</option>
+          <option value="local">Local</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label>Model</label>
+        <div style="display: flex; gap: 4px;">
+          <select id="modelSelect" disabled>
+            <option value="">Loading models...</option>
+          </select>
+          <button class="refresh-btn" id="refreshModels">🔄</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Mini Chat -->
+  <div class="mini-chat">
+    <div class="chat-messages" id="chatMessages">
+      <div class="welcome-message">
+        Type a quick message or use the buttons below
+      </div>
+    </div>
+    
+    <div class="input-container">
+      <textarea id="messageInput" placeholder="Ask a quick question..." rows="2"></textarea>
+      <button class="send-btn" id="sendBtn">Send</button>
+    </div>
+  </div>
+  
+  <!-- Action Buttons -->
+  <div class="actions">
+    <button class="action-btn primary" id="openChatBtn">Open Chat</button>
+    <button class="action-btn" id="openSettingsBtn">Settings</button>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
