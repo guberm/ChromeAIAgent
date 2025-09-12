@@ -1,0 +1,9 @@
+build\
+.git\
+.gitignore
+build-webstore.bat
+build-exclude.txt
+manifest-dev.json
+test-*.html
+*.md
+LICENSE

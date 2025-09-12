@@ -64,8 +64,11 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 
 ## 🚀 Installation
 
-### Method 1: Chrome Web Store (Coming Soon)
-*Extension will be available on the Chrome Web Store*
+### Method 1: Chrome Web Store
+1. Visit the [Chrome Web Store](https://chrome.google.com/webstore) (coming soon)
+2. Search for "ChromeAI Agent"
+3. Click "Add to Chrome"
+4. Pin the extension for easy access
 
 ### Method 2: Developer Mode (Current)
 
@@ -84,6 +87,16 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 3. **Pin the Extension**
    - Click the puzzle piece icon in Chrome toolbar
    - Pin "ChromeAI Agent" for easy access
+
+### 🔧 Development Setup
+
+For developers who want to test with local servers:
+
+1. Rename `manifest.json` to `manifest-prod.json`
+2. Rename `manifest-dev.json` to `manifest.json`
+3. Load the extension in developer mode
+
+The development manifest includes localhost permissions for testing local AI servers.
 
 ---
 
