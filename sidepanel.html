@@ -27,6 +27,9 @@
         <div id="connectionStatus" class="connection-status"></div>
       </div>
       <div class="header-right">
+        <button id="automationBtn" class="icon-button" title="Browser Automation (Ctrl+M)">
+          🎯
+        </button>
         <button id="newChatBtn" class="icon-button" title="New Chat">
           ➕
         </button>
@@ -39,8 +42,15 @@
       </div>
     </div>
 
-    <!-- Main Content -->
-    <div id="chatView" class="main-content">
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+      <button id="chatTab" class="tab-button active">💬 Chat</button>
+      <button id="automationTab" class="tab-button">🎯 Automation</button>
+      <button id="notesTab" class="tab-button">📝 Notes</button>
+    </div>
+
+    <!-- Chat View -->
+    <div id="chatView" class="main-content tab-content active">
       <!-- Messages Container -->
       <div id="messagesContainer" class="messages-container">
         <div class="welcome-message">
@@ -48,6 +58,7 @@
           <h2>Welcome to ChromeAiAgent</h2>
           <p id="welcomeText">Start a conversation with your AI assistant. I can help you with questions about this page or anything else!</p>
         </div>
+      </div>
       </div>
 
       <!-- Input Area -->
@@ -64,6 +75,75 @@
           <button id="stopBtn" class="stop-button" style="display: none;">
             <span class="stop-icon">⏹</span>
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Automation View -->
+    <div id="automationView" class="main-content tab-content" style="display: none;">
+      <div class="automation-container">
+        <div class="automation-header">
+          <h3>🎯 Browser Automation</h3>
+          <p class="automation-help">Type commands in natural language. Examples:</p>
+          <div class="automation-examples">
+            <div class="example-item">• "Click the login button"</div>
+            <div class="example-item">• "Fill form with name: John, email: john@example.com"</div>
+            <div class="example-item">• "Take a screenshot"</div>
+            <div class="example-item">• "Extract all links"</div>
+            <div class="example-item">• "Organize tabs by domain"</div>
+            <div class="example-item">• "Highlight important text"</div>
+          </div>
+        </div>
+
+        <div class="automation-input-area">
+          <div class="automation-input-container">
+            <textarea 
+              id="automationInput" 
+              placeholder="Enter automation command (e.g., 'click the submit button')..."
+              rows="2"
+            ></textarea>
+            <button id="executeBtn" class="execute-button">
+              <span class="execute-icon">⚡</span>
+              Execute
+            </button>
+          </div>
+        </div>
+
+        <div id="automationResults" class="automation-results">
+          <div class="results-header">
+            <h4>Automation Results</h4>
+            <button id="clearResultsBtn" class="clear-button">Clear</button>
+          </div>
+          <div id="resultsContainer" class="results-container">
+            <div class="no-results">No automation commands executed yet.</div>
+          </div>
+        </div>
+
+        <div class="quick-actions">
+          <h4>Quick Actions</h4>
+          <div class="quick-actions-grid">
+            <button class="quick-action-btn" data-command="take a screenshot">📸 Screenshot</button>
+            <button class="quick-action-btn" data-command="scroll down">⬇️ Scroll Down</button>
+            <button class="quick-action-btn" data-command="scroll up">⬆️ Scroll Up</button>
+            <button class="quick-action-btn" data-command="organize tabs by domain">📂 Organize Tabs</button>
+            <button class="quick-action-btn" data-command="extract all links">🔗 Extract Links</button>
+            <button class="quick-action-btn" data-command="take a note">📝 Smart Note</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notes View -->
+    <div id="notesView" class="main-content tab-content" style="display: none;">
+      <div class="notes-container">
+        <div class="notes-header">
+          <h3>📝 Smart Notes</h3>
+          <p class="notes-help">AI-generated notes from your browsing sessions</p>
+          <button id="refreshNotesBtn" class="refresh-button">🔄 Refresh</button>
+        </div>
+
+        <div id="notesContainer" class="notes-list">
+          <div class="no-notes">No notes generated yet. Use automation commands to create smart notes!</div>
         </div>
       </div>
     </div>

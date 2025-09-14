@@ -119,10 +119,18 @@ class ChromeAiAgent {
 
     const providerSelect = document.getElementById('providerSelect');
     if (providerSelect) {
-      providerSelect.addEventListener('change', (e) => {
+      providerSelect.addEventListener('change', async (e) => {
         console.log('Provider changed to:', e.target.value);
         this.updateProviderDefaults(e.target.value);
         this.updateDefaultProviderIndicator();
+        
+        // Automatically save the new provider setting
+        try {
+          await this.saveSettings();
+          console.log('🔧 Provider settings auto-saved');
+        } catch (error) {
+          console.error('🔧 Failed to auto-save provider settings:', error);
+        }
         
         // Update web session status for the new provider
         const authModeSelect = document.getElementById('authModeSelect');
@@ -257,11 +265,12 @@ class ChromeAiAgent {
       if (tabs[0]) {
         this.pageInfo = {
           url: tabs[0].url,
-          title: tabs[0].title
+          title: tabs[0].title,
+          isRestricted: this.isRestrictedPage(tabs[0].url)
         };
         
         // Extract page content if on a valid webpage
-        if (tabs[0].url && !tabs[0].url.startsWith('chrome://') && !tabs[0].url.startsWith('chrome-extension://')) {
+        if (tabs[0].url && !this.isRestrictedPage(tabs[0].url)) {
           try {
             const results = await chrome.scripting.executeScript({
               target: { tabId: tabs[0].id },
@@ -274,8 +283,15 @@ class ChromeAiAgent {
             }
           } catch (contentError) {
             console.log('Could not extract page content:', contentError.message);
-            // This is expected for some pages (chrome://, extensions, etc.)
+            this.pageInfo.contentError = contentError.message;
+            // Mark as restricted if content extraction fails
+            this.pageInfo.isRestricted = true;
           }
+        } else {
+          console.log('📄 Skipping content extraction for restricted page:', tabs[0].url);
+          this.pageInfo.content = `Page type: ${this.getPageType(tabs[0].url)}
+This page cannot be automated or analyzed due to browser security restrictions.
+Available actions are limited to basic navigation commands.`;
         }
       }
       
@@ -293,6 +309,37 @@ class ChromeAiAgent {
     }
   }
 
+  isRestrictedPage(url) {
+    if (!url) return true;
+    
+    const restrictedPatterns = [
+      /^chrome:\/\//,
+      /^chrome-extension:\/\//,
+      /^edge:\/\//,
+      /^firefox:\/\//,
+      /^moz-extension:\/\//,
+      /^chrome\.google\.com\/webstore/,
+      /^addons\.mozilla\.org/,
+      /^microsoftedge\.microsoft\.com/
+    ];
+    
+    return restrictedPatterns.some(pattern => pattern.test(url));
+  }
+
+  getPageType(url) {
+    if (!url) return 'Unknown';
+    
+    if (url.startsWith('chrome://')) return 'Chrome Internal Page';
+    if (url.startsWith('chrome-extension://')) return 'Chrome Extension Page';
+    if (url.includes('chrome.google.com/webstore')) return 'Chrome Web Store';
+    if (url.includes('addons.mozilla.org')) return 'Firefox Add-ons Store';
+    if (url.startsWith('edge://')) return 'Edge Internal Page';
+    if (url.startsWith('firefox://')) return 'Firefox Internal Page';
+    if (url.startsWith('moz-extension://')) return 'Firefox Extension Page';
+    
+    return 'Restricted Page';
+  }
+
   updatePageContext() {
     const pageContextEl = document.getElementById('pageContext');
     const pageTitleEl = document.getElementById('pageTitle');
@@ -303,13 +350,21 @@ class ChromeAiAgent {
         displayTitle = displayTitle.substring(0, 37) + '...';
       }
       
+      // Add restriction indicator if page is restricted
+      if (this.pageInfo.isRestricted) {
+        displayTitle += ' 🔒';
+        pageTitleEl.title = `${this.pageInfo.title} (Restricted Page - Limited functionality available)`;
+      } else {
+        pageTitleEl.title = this.pageInfo.title; // Full title on hover
+      }
+      
       pageTitleEl.textContent = displayTitle;
-      pageTitleEl.title = this.pageInfo.title; // Full title on hover
       pageContextEl.style.display = 'flex';
       
       console.log('📄 Page context updated:', {
         title: this.pageInfo.title,
         url: this.pageInfo.url,
+        isRestricted: this.pageInfo.isRestricted,
         hasContent: !!this.pageInfo.content,
         contentLength: this.pageInfo.content?.length || 0
       });
@@ -333,30 +388,147 @@ class ChromeAiAgent {
         chrome.storage.local.remove(['pendingAction']);
       }
     });
+
+    // Page context refresh
+    const refreshPageContextBtn = document.getElementById('refreshPageContextBtn');
+    if (refreshPageContextBtn) {
+      refreshPageContextBtn.addEventListener('click', async () => {
+        await this.loadPageContext();
+      });
+    }
+
+    // Tab navigation
+    const chatTab = document.getElementById('chatTab');
+    if (chatTab) {
+      chatTab.addEventListener('click', () => this.switchTab('chat'));
+    }
+
+    const automationTab = document.getElementById('automationTab');
+    if (automationTab) {
+      automationTab.addEventListener('click', () => this.switchTab('automation'));
+    }
+
+    const notesTab = document.getElementById('notesTab');
+    if (notesTab) {
+      notesTab.addEventListener('click', () => this.switchTab('notes'));
+    }
+
+    const automationBtn = document.getElementById('automationBtn');
+    if (automationBtn) {
+      automationBtn.addEventListener('click', () => this.switchTab('automation'));
+    }
+
+    // Automation controls
+    const executeBtn = document.getElementById('executeBtn');
+    if (executeBtn) {
+      executeBtn.addEventListener('click', () => this.executeAutomationCommand());
+    }
+
+    const automationInput = document.getElementById('automationInput');
+    if (automationInput) {
+      automationInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          this.executeAutomationCommand();
+        }
+      });
+    }
+
+    const clearResultsBtn = document.getElementById('clearResultsBtn');
+    if (clearResultsBtn) {
+      clearResultsBtn.addEventListener('click', () => this.clearAutomationResults());
+    }
+
+    // Quick action buttons
+    document.addEventListener('click', (e) => {
+      if (e.target.classList.contains('quick-action-btn')) {
+        const command = e.target.getAttribute('data-command');
+        if (command) {
+          this.executeQuickAction(command);
+        }
+      }
+    });
+
+    // Notes controls
+    const refreshNotesBtn = document.getElementById('refreshNotesBtn');
+    if (refreshNotesBtn) {
+      refreshNotesBtn.addEventListener('click', () => this.loadNotes());
+    }
+
+    // Listen for automation focus messages
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'focusAutomation') {
+        this.switchTab('automation');
+        const automationInput = document.getElementById('automationInput');
+        if (automationInput) {
+          automationInput.focus();
+        }
+      }
+    });
   }
 
   async loadSettings() {
-    this.settings = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'getSettings' }, resolve);
-    });
+    try {
+      console.log('🔧 Loading settings from background...');
+      const response = await chrome.runtime.sendMessage({ action: 'getProviderSettings' });
+      console.log('🔧 Settings response:', response);
+      
+      this.settings = response?.settings;
+      console.log('🔧 Loaded settings:', this.settings);
 
-    // Load default provider preference
-    const defaultProvider = await new Promise((resolve) => {
-      chrome.storage.sync.get(['defaultProvider'], (result) => {
-        resolve(result.defaultProvider);
+      // Initialize settings if they don't exist
+      if (!this.settings) {
+        console.log('🔧 No settings found, initializing defaults...');
+        this.settings = {
+          provider: 'openai',
+          apiKey: '',
+          host: 'https://api.openai.com/v1/chat/completions',
+          model: '',
+          temperature: 0.7,
+          maxTokens: 800,
+          authMode: 'api'
+        };
+      }
+
+      // Load default provider preference
+      const defaultProvider = await new Promise((resolve) => {
+        chrome.storage.sync.get(['defaultProvider'], (result) => {
+          resolve(result.defaultProvider);
+        });
       });
-    });
 
-    if (this.settings) {
-      await this.populateSettingsForm();
-    } else {
-      // Set default to saved default provider or OpenAI if no settings
-      const provider = defaultProvider || 'openai';
-      this.updateProviderDefaults(provider);
+      if (this.settings && this.settings.provider) {
+        await this.populateSettingsForm();
+        // Update provider status display with current settings
+        this.updateProviderStatus(this.settings.provider, this.settings.model);
+      } else {
+        // Set default to saved default provider or OpenAI if no settings
+        const provider = defaultProvider || 'openai';
+        this.updateProviderDefaults(provider);
+        // Update display with default
+        this.updateProviderStatus(provider, '-');
+      }
+
+      // Update the default provider indicator
+      this.updateDefaultProviderIndicator();
+      
+      // Update connection status
+      this.updateConnectionStatus();
+    } catch (error) {
+      console.error('🔧 Error loading settings:', error);
+      // Initialize with defaults if loading fails
+      this.settings = {
+        provider: 'openai',
+        apiKey: '',
+        host: 'https://api.openai.com/v1/chat/completions',
+        model: '',
+        temperature: 0.7,
+        maxTokens: 800,
+        authMode: 'api'
+      };
+      this.updateProviderDefaults('openai');
+      this.updateProviderStatus('openai', '-');
     }
-
-    // Update the default provider indicator
-    this.updateDefaultProviderIndicator();
   }
 
   async populateSettingsForm() {
@@ -374,7 +546,7 @@ class ChromeAiAgent {
     
     elements.providerSelect.value = provider;
     elements.temperatureInput.value = this.settings.temperature || 0.7;
-    elements.maxTokensInput.value = this.settings.maxTokens || 2048;
+    elements.maxTokensInput.value = this.settings.maxTokens || 800;
     document.getElementById('temperatureValue').textContent = this.settings.temperature || 0.7;
     
     // Load authentication mode
@@ -471,7 +643,7 @@ class ChromeAiAgent {
         info: 'Azure OpenAI provides enterprise-grade security and compliance. Requires Azure subscription.'
       },
       local: {
-        host: 'http://localhost:1234/v1/chat/completions',
+        host: 'http://127.0.0.1:11434/api/chat',
         models: [], // Dynamic - auto-detected from local servers
         info: 'Local AI models running on your machine (Ollama, LM Studio, etc.). No API key required - auto-detects models.'
       },
@@ -507,6 +679,12 @@ class ChromeAiAgent {
     // Always update host when switching providers
     hostInput.value = defaults.host;
 
+    // Force correct host for local provider (in case old settings are cached)
+    if (provider === 'local') {
+      hostInput.value = 'http://127.0.0.1:11434/api/chat';
+      console.log('🔧 Forced local provider host to Ollama default');
+    }
+
     // Clear the model dropdown initially - will be populated when models are fetched
     const currentModel = modelSelect.value;
     if (!currentModel || currentModel === 'undefined') {
@@ -520,8 +698,8 @@ class ChromeAiAgent {
     // For local and custom providers, clear API key requirement
     if (provider === 'local' || provider === 'custom') {
       apiKeyInput.placeholder = 'Not required for local models';
-      if (!apiKeyInput.value || apiKeyInput.value === '') {
-        apiKeyInput.value = 'local-no-key-required';
+      if (!apiKeyInput.value || apiKeyInput.value === '' || apiKeyInput.value === 'local-no-key-required') {
+        apiKeyInput.value = ''; // Keep empty for local provider
       }
     } else {
       apiKeyInput.placeholder = 'Enter your API key';
@@ -586,6 +764,119 @@ class ChromeAiAgent {
     } else {
       console.error('🔍 currentModel element not found');
     }
+    
+    // Add dynamic token status for all providers
+    this.updateTokenStatus();
+  }
+  
+  async updateTokenStatus() {
+    try {
+      // Check if we have a token status element, if not create one
+      let tokenStatusEl = document.getElementById('tokenStatus');
+      if (!tokenStatusEl) {
+        tokenStatusEl = document.createElement('div');
+        tokenStatusEl.id = 'tokenStatus';
+        tokenStatusEl.style.cssText = `
+          margin: 8px 0;
+          padding: 8px;
+          background: #f8f9fa;
+          border-radius: 6px;
+          font-size: 12px;
+          color: #666;
+        `;
+        
+        // Try multiple possible containers
+        const possibleContainers = [
+          document.querySelector('.status-section'),
+          document.querySelector('.settings-container'),
+          document.querySelector('.provider-status'),
+          document.getElementById('settingsPanel'),
+          document.body
+        ];
+        
+        let targetContainer = null;
+        for (const container of possibleContainers) {
+          if (container) {
+            targetContainer = container;
+            break;
+          }
+        }
+        
+        if (targetContainer) {
+          targetContainer.appendChild(tokenStatusEl);
+        } else {
+          console.log('No suitable container found for token status');
+          return;
+        }
+      }
+      
+      // Get current provider for specific messaging
+      const provider = this.settings?.provider || 'openrouter';
+      const providerInfo = this.getProviderTokenInfo(provider);
+      
+      tokenStatusEl.innerHTML = `🧠 ${providerInfo.name}: ${providerInfo.description}`;
+      
+    } catch (error) {
+      console.log('Could not update token status:', error);
+    }
+  }
+  
+  getProviderTokenInfo(provider) {
+    const providerData = {
+      'openrouter': {
+        name: 'OpenRouter Dynamic Tokens',
+        description: 'Real-time credit checking + smart optimization'
+      },
+      'openai': {
+        name: 'OpenAI Smart Tokens', 
+        description: 'Subscription-optimized with 1.5x limits'
+      },
+      'anthropic': {
+        name: 'Claude Long Context',
+        description: 'Optimized for long documents (2x tokens)'
+      },
+      'groq': {
+        name: 'Groq Speed Tokens',
+        description: 'Fast inference with efficiency focus'
+      },
+      'deepseek': {
+        name: 'DeepSeek Balanced',
+        description: 'Smart balance of context and efficiency'
+      },
+      'perplexity': {
+        name: 'Perplexity Research',
+        description: 'Optimized for research and analysis'
+      },
+      'azure': {
+        name: 'Azure Enterprise',
+        description: 'Enterprise-grade with high limits (1.8x)'
+      },
+      'github': {
+        name: 'GitHub Models Preview',
+        description: 'Preview generosity (2.5x token limits)'
+      },
+      'gemini': {
+        name: 'Gemini Multimodal',
+        description: 'Google\'s generous free tier (2x tokens)'
+      },
+      'google': {
+        name: 'Google AI',
+        description: 'Google\'s generous free tier (2x tokens)'
+      },
+      'local': {
+        name: 'Local Unlimited',
+        description: 'No limits - use as much as needed'
+      },
+      'ollama': {
+        name: 'Ollama Unlimited',
+        description: 'Local inference - no token constraints'
+      }
+    };
+    
+    return providerData[provider] || {
+      name: 'Custom Provider',
+      description: 'Dynamic optimization enabled'
+    };
   }
 
   async saveSettings() {
@@ -631,7 +922,7 @@ class ChromeAiAgent {
     try {
       await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage({
-          action: 'saveSettings',
+          action: 'setProviderSettings',
           settings: newSettings
         }, (response) => {
           if (response && response.success) {
@@ -645,6 +936,7 @@ class ChromeAiAgent {
       this.settings = newSettings;
       this.showSuccess('Settings saved successfully!');
       this.updateConnectionStatus();
+      this.updateProviderStatus(newSettings.provider, newSettings.model);
       
       // Auto-test connection after saving
       setTimeout(() => this.testConnection(), 500);
@@ -700,7 +992,7 @@ class ChromeAiAgent {
       apiKey: apiKeyInput?.value?.trim() || '',
       model: modelSelect?.value?.trim() || '',
       temperature: parseFloat(temperatureInput?.value) || 0.7,
-      maxTokens: parseInt(maxTokensInput?.value) || 2048,
+      maxTokens: parseInt(maxTokensInput?.value) || 800,
       authMode: authModeSelect?.value || 'api'
     };
   }
@@ -798,10 +1090,12 @@ class ChromeAiAgent {
       
       const result = await new Promise((resolve) => {
         chrome.runtime.sendMessage({
-          action: 'fetchModels',
-          settings: settings
+          action: 'getModels',
+          provider: settings.provider,
+          apiKey: settings.apiKey,
+          baseUrl: settings.host
         }, (response) => {
-          console.log('Received fetchModels response:', response);
+          console.log('Received getModels response:', response);
           console.log('Response models array:', response?.models);
           console.log('Response models length:', response?.models?.length);
           resolve(response);
@@ -880,16 +1174,20 @@ class ChromeAiAgent {
         
         // Show specific error message
         if (result && result.error) {
-          if (result.error.includes('API key required')) {
+          const errorMessage = typeof result.error === 'string' ? result.error : JSON.stringify(result.error);
+          if (errorMessage.includes('API key required')) {
             modelHelpText.textContent = `API key required for ${settings.provider}. Without authentication, cannot fetch models or send requests.`;
-          } else if (result.error.includes('web-interface only')) {
+          } else if (errorMessage.includes('web-interface only')) {
             modelHelpText.textContent = `${settings.provider} only supports web interface. Use the website directly.`;
-          } else if (result.error.includes('not available')) {
+          } else if (errorMessage.includes('not available')) {
             modelHelpText.textContent = `Model API not available for ${settings.provider}.`;
           } else {
-            modelHelpText.textContent = `Error: ${result.error}`;
+            modelHelpText.textContent = `Error: ${errorMessage}`;
           }
         } else {
+          const authModeSelect = document.getElementById('authModeSelect');
+          const currentAuthMode = authModeSelect ? authModeSelect.value : 'api';
+          
           if (currentAuthMode === 'web') {
             modelHelpText.textContent = `Unable to fetch models in web session mode. Please capture web session first.`;
           } else {
@@ -917,7 +1215,22 @@ class ChromeAiAgent {
     
     if (!message || this.isStreaming) return;
 
-    if (!this.settings.apiKey) {
+    // Always refresh page context before sending message
+    await this.loadPageContext();
+
+    // Check if message is an automation command first
+    if (await this.isAutomationCommand(message)) {
+      return await this.executeAutomationFromChat(message);
+    }
+
+    // Ensure settings exist
+    if (!this.settings) {
+      console.error('🔧 Settings not loaded');
+      this.showError('Settings not loaded. Please refresh the page.');
+      return;
+    }
+
+    if (!this.settings.apiKey && this.settings.provider !== 'local') {
       this.showError('Please configure your AI provider in settings first.');
       this.showSettings();
       return;
@@ -936,22 +1249,90 @@ class ChromeAiAgent {
     this.updateStreamingUI(true);
 
     try {
-      // Prepare messages with page context
+      // Prepare messages with enhanced page context
       const messages = [...this.messages];
       
-      // Add system message with page context if available
+      // Get current provider and model settings
+      const providerSelect = document.getElementById('providerSelect');
+      const modelSelect = document.getElementById('modelSelect');
+      const currentProvider = providerSelect ? providerSelect.value : this.settings.provider;
+      const currentModel = (modelSelect && modelSelect.value) ? modelSelect.value : this.settings.model;
+      
+      console.log('🔧 Current provider for AI request:', currentProvider);
+      console.log('🔧 Current model for AI request:', currentModel);
+      console.log('🔧 DEBUG - modelSelect element:', modelSelect);
+      console.log('🔧 DEBUG - modelSelect.value:', modelSelect?.value);
+      console.log('🔧 DEBUG - modelSelect.selectedIndex:', modelSelect?.selectedIndex);
+      console.log('🔧 DEBUG - modelSelect options count:', modelSelect?.options?.length);
+      console.log('🔧 DEBUG - this.settings.model:', this.settings.model);
+      console.log('🔧 DEBUG - Final currentModel after fallback:', currentModel);
+      
+      // Ensure model is not empty
+      if (!currentModel) {
+        console.error('🚨 No model selected! Using settings fallback.');
+        console.error('🚨 Settings model:', this.settings.model);
+        this.showError('No model selected. Please select a model in settings first.');
+        this.showSettings();
+        return;
+      }
+      
+      // Add comprehensive system message with page context
       if (this.pageInfo && (this.pageInfo.title || this.pageInfo.content)) {
-        let systemMessage = "You are a helpful AI assistant.";
+        let systemMessage = "You are a helpful AI assistant with browser automation capabilities.";
         
         if (this.pageInfo.title && this.pageInfo.url) {
           systemMessage += ` The user is currently viewing a webpage titled "${this.pageInfo.title}" at ${this.pageInfo.url}.`;
         }
         
-        if (this.pageInfo.content) {
-          systemMessage += ` Here is the relevant content from the current page:\n\n${this.pageInfo.content}`;
+        // Add page restriction information
+        if (this.pageInfo.isRestricted) {
+          systemMessage += `\n\n⚠️ IMPORTANT: This page is RESTRICTED for automation. This is a ${this.getPageType(this.pageInfo.url)} which cannot be automated due to browser security restrictions. You can only provide general information and suggest navigation to regular websites for automation.`;
         }
         
-        systemMessage += "\n\nPlease use this context to provide more relevant and helpful responses to the user's questions.";
+        if (this.pageInfo.content) {
+          // DISABLED: Page content truncation - using full page source for analysis
+          // User requested to always analyze complete page content
+          let pageContent = this.pageInfo.content;
+          console.log(`📄 Page content truncation DISABLED - using full content: ${pageContent.length} chars`);
+          
+          // ORIGINAL TRUNCATION CODE DISABLED:
+          // const maxContentLength = 3000; // Limit page content to ~3000 chars to save tokens
+          // if (pageContent.length > maxContentLength) {
+          //   const keepStart = Math.floor(maxContentLength * 0.6); // 60% from start
+          //   const keepEnd = Math.floor(maxContentLength * 0.3);   // 30% from end
+          //   const startContent = pageContent.substring(0, keepStart);
+          //   const endContent = pageContent.substring(pageContent.length - keepEnd);
+          //   pageContent = `${startContent}
+          //
+          // [... Content truncated to save tokens. Original length: ${this.pageInfo.content.length} characters ...]
+          //
+          // ${endContent}`;
+          //   console.log(`📄 Page content truncated: ${pageContent.length} chars (was ${this.pageInfo.content.length})`);
+          // }
+          
+          // Include FULL page source for analysis
+          systemMessage += ` Here is the page source and content:\n\n=== PAGE SOURCE ===\n${pageContent}\n=== END PAGE SOURCE ===`;
+        }
+        
+        // Add automation capabilities context
+        if (!this.pageInfo.isRestricted) {
+          systemMessage += `\n\nAVAILABLE AUTOMATION ACTIONS:
+You can help automate browser interactions using these actions:
+- Mouse Events: click, hover, doubleClick, rightClick, mouseDown, mouseUp, scroll
+- Keyboard Events: type, keyDown, keyUp, sendKeys (for key combinations like Ctrl+C)
+- Form Actions: focus, blur, select, check, submit, reset, clearInput, uploadFile
+- Drag & Drop: dragAndDrop, dragStart, drop
+- Touch Events: touchStart, touchMove, touchEnd (mobile)
+- Page Actions: refresh, goBack, goForward, navigate, newTab
+- Content Manipulation: getText, setText, getAttribute, setAttribute, addClass, removeClass
+- Visual Actions: highlight, hide, show, setStyle
+- Waiting: wait, waitForElement, waitForText, waitForUrl
+- Extract: extractPageElements (get all interactive elements)
+
+When user asks for automation, analyze the page content and suggest appropriate CSS selectors for the elements they want to interact with.`;
+        } else {
+          systemMessage += `\n\n🚫 AUTOMATION DISABLED: Browser automation is not available on this page type. You can help with general questions but cannot perform any automation actions. Suggest navigating to a regular website for automation features.`;
+        }
         
         // Insert system message at the beginning
         messages.unshift({
@@ -959,21 +1340,78 @@ class ChromeAiAgent {
           content: systemMessage
         });
         
-        console.log('📄 Added page context to request:', {
+        console.log('📄 Added enhanced page context to request:', {
           title: this.pageInfo.title,
           url: this.pageInfo.url,
-          contentLength: this.pageInfo.content?.length || 0
+          isRestricted: this.pageInfo.isRestricted,
+          contentLength: this.pageInfo.content?.length || 0,
+          hasFullSource: !!this.pageInfo.content
         });
       }
 
       const response = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({
-          action: 'sendAIMessage',
-          data: {
-            messages: messages,
-            stream: false // We'll implement streaming later
+        // Show dynamic token info to user - with error handling
+        try {
+          const messageContainer = document.getElementById('chatMessages');
+          if (messageContainer) {
+            const tokenInfo = document.createElement('div');
+            tokenInfo.className = 'token-optimization-info';
+            tokenInfo.style.cssText = `
+              background: #f0f8ff;
+              border: 1px solid #4a90e2;
+              border-radius: 8px;
+              padding: 8px 12px;
+              margin: 8px 0;
+              font-size: 12px;
+              color: #2c5aa0;
+            `;
+            tokenInfo.innerHTML = `🧠 Optimizing tokens for your request...`;
+            messageContainer.appendChild(tokenInfo);
+
+            chrome.runtime.sendMessage({
+              action: 'sendAIMessage',
+              data: {
+                messages: messages,
+                provider: currentProvider,
+                model: currentModel,
+                stream: false // We'll implement streaming later
+              }
+            }, (response) => {
+              // Remove token info after response
+              try {
+                if (tokenInfo && tokenInfo.parentNode) {
+                  tokenInfo.parentNode.removeChild(tokenInfo);
+                }
+              } catch (e) {
+                console.log('Could not remove token info:', e);
+              }
+              resolve(response);
+            });
+          } else {
+            // Fallback if no message container found
+            chrome.runtime.sendMessage({
+              action: 'sendAIMessage',
+              data: {
+                messages: messages,
+                provider: currentProvider,
+                model: currentModel || this.settings.model || 'gpt-oss:20b', // Triple fallback
+                stream: false
+              }
+            }, resolve);
           }
-        }, resolve);
+        } catch (error) {
+          console.log('Token info display error:', error);
+          // Fallback to normal message sending
+          chrome.runtime.sendMessage({
+            action: 'sendAIMessage',
+            data: {
+              messages: messages,
+              provider: currentProvider,
+              model: currentModel || this.settings.model || 'gpt-oss:20b', // Triple fallback
+              stream: false
+            }
+          }, resolve);
+        }
       });
 
       this.removeTypingIndicator(typingId);
@@ -986,46 +1424,69 @@ class ChromeAiAgent {
       console.log('🔍 Response.result keys:', response.result ? Object.keys(response.result) : 'No result object');
 
       if (response.error) {
-        this.addMessage('assistant', `Error: ${response.error}`);
+        // Handle error object properly
+        let errorMessage = 'An error occurred';
+        
+        if (typeof response.error === 'string') {
+          errorMessage = response.error;
+        } else if (response.error.message) {
+          // Extract user-friendly error message
+          const errorObj = response.error;
+          
+          if (errorObj.code === 'PROVIDER_ERROR' && errorObj.message.includes('402')) {
+            errorMessage = `💳 Credit limit reached. Your OpenRouter account has insufficient credits to complete this request. Please add credits to your account or try a different provider.`;
+          } else if (errorObj.message.includes('429')) {
+            errorMessage = `⏰ Rate limit exceeded. Too many requests in a short time. Please wait a moment and try again.`;
+          } else if (errorObj.message.includes('401')) {
+            errorMessage = `🔑 Authentication failed. Please check your API key in settings.`;
+          } else if (errorObj.message.includes('403')) {
+            errorMessage = `🚫 Access denied. Your API key may not have permission for this request.`;
+          } else {
+            errorMessage = `❌ ${errorObj.message}`;
+          }
+        } else {
+          errorMessage = `❌ ${JSON.stringify(response.error)}`;
+        }
+        
+        this.addMessage('assistant', errorMessage);
         this.showError(response.error);
       } else {
         // Handle both regular response format and JSON-RPC format
-        let content;
+        let content = '';
         
-        if (response.result && response.jsonrpc) {
-          // JSON-RPC format (MCP response)
+        if (response.result) {
           console.log('🔍 Processing JSON-RPC response');
           console.log('🔍 response.result:', response.result);
           console.log('🔍 response.result type:', typeof response.result);
           
-          // Handle OpenAI-style response in MCP result
           if (response.result.choices && response.result.choices[0] && response.result.choices[0].message) {
             content = response.result.choices[0].message.content;
             console.log('🔍 Extracted from choices[0].message.content:', content);
+          } else if (response.result.content) {
+            content = response.result.content;
+            console.log('🔍 Extracted from result.content:', content);
+          } else if (typeof response.result === 'string') {
+            content = response.result;
+            console.log('🔍 Using result as string:', content);
           } else {
-            // Check other possible content fields in result
-            content = response.result.content || 
-                     response.result.response || 
-                     response.result.message || 
-                     response.result.text ||
-                     response.result.answer ||
-                     (typeof response.result === 'string' ? response.result : null);
-            console.log('🔍 Extracted from other result fields:', content);
+            content = 'No content in response';
+            console.log('🔍 No recognizable content structure');
           }
+        } else if (response.content) {
+          content = response.content;
+          console.log('🔍 Extracted from response.content:', content);
         } else {
-          // Regular format
-          console.log('🔍 Processing regular response format');
-          content = response.content || response.response || response.message || response.text;
+          content = 'No content in response';
+          console.log('🔍 No content found in response');
         }
         
-        content = content || 'No response content found';
         console.log('🔍 Final content to display:', content);
         this.addMessage('assistant', content);
       }
     } catch (error) {
       this.removeTypingIndicator(typingId);
       this.addMessage('assistant', `Error: ${error.message}`);
-      this.showError('Failed to send message: ' + error.message);
+      this.showError(`Failed to send message: ${error.message}`);
     } finally {
       this.isStreaming = false;
       this.updateStreamingUI(false);
@@ -1246,12 +1707,27 @@ class ChromeAiAgent {
   updateConnectionStatus(status = null, type = null) {
     const statusEl = document.getElementById('connectionStatus');
     
+    if (!statusEl) return;
+    
     if (status && type) {
       statusEl.textContent = status;
       statusEl.className = `connection-status ${type}`;
-    } else if (this.settings.apiKey) {
-      statusEl.textContent = 'Ready';
-      statusEl.className = 'connection-status connected';
+    } else if (this.settings) {
+      // For local provider, we don't need an API key - check if provider is configured
+      const isLocalProvider = this.settings.provider === 'local';
+      const hasApiKey = this.settings.apiKey && this.settings.apiKey.trim() !== '';
+      const hasHost = this.settings.host && this.settings.host.trim() !== '';
+      
+      if (isLocalProvider && hasHost) {
+        statusEl.textContent = 'Ready (Local)';
+        statusEl.className = 'connection-status connected';
+      } else if (!isLocalProvider && hasApiKey) {
+        statusEl.textContent = 'Ready';
+        statusEl.className = 'connection-status connected';
+      } else {
+        statusEl.textContent = 'Not configured';
+        statusEl.className = 'connection-status error';
+      }
     } else {
       statusEl.textContent = 'Not configured';
       statusEl.className = 'connection-status error';
@@ -1259,16 +1735,158 @@ class ChromeAiAgent {
   }
 
   showChat() {
+    // Show tab navigation
+    const tabNavigation = document.querySelector('.tab-navigation');
+    if (tabNavigation) {
+      tabNavigation.style.display = 'flex';
+    }
+
+    // Restore settings view to original position if it was moved
+    const settingsView = document.getElementById('settingsView');
+    if (settingsView && settingsView.getAttribute('data-original-parent')) {
+      // If settings view was moved to body, restore it to original position
+      if (settingsView.parentElement === document.body) {
+        const originalParentId = settingsView.getAttribute('data-original-parent');
+        const originalParent = originalParentId ? document.getElementById(originalParentId) : document.querySelector('#app');
+        if (originalParent) {
+          originalParent.appendChild(settingsView);
+        }
+        settingsView.removeAttribute('data-original-parent');
+      }
+      
+      // Reset styles
+      settingsView.style.display = 'none';
+      settingsView.style.position = '';
+      settingsView.style.top = '';
+      settingsView.style.left = '';
+      settingsView.style.right = '';
+      settingsView.style.bottom = '';
+      settingsView.style.zIndex = '';
+      settingsView.style.backgroundColor = '';
+      settingsView.style.width = '';
+      settingsView.style.height = '';
+      settingsView.style.overflow = '';
+    } else if (settingsView) {
+      settingsView.style.display = 'none';
+    }
+    
+    // Hide logs view
+    const logsView = document.getElementById('logsView');
+    if (logsView) {
+      logsView.style.display = 'none';
+    }
+    
+    // Show chat view with tab system
     document.getElementById('chatView').style.display = 'flex';
-    document.getElementById('settingsView').style.display = 'none';
-    document.getElementById('logsView').style.display = 'none';
+    
+    // Switch to chat tab and restore tab content visibility
+    this.switchTab('chat');
     this.currentView = 'chat';
   }
 
   showSettings() {
-    document.getElementById('chatView').style.display = 'none';
-    document.getElementById('settingsView').style.display = 'block';
-    document.getElementById('logsView').style.display = 'none';
+    console.log('🎛️ showSettings() called');
+    
+    // Hide all tab contents and navigation
+    const tabContents = document.querySelectorAll('.tab-content');
+    console.log('🎛️ Found tab contents:', tabContents.length);
+    tabContents.forEach(content => {
+      content.classList.remove('active');
+      content.style.display = 'none';
+    });
+
+    // Hide tab navigation
+    const tabNavigation = document.querySelector('.tab-navigation');
+    if (tabNavigation) {
+      tabNavigation.style.display = 'none';
+      console.log('🎛️ Tab navigation hidden');
+    }
+
+    // Hide all main views
+    const chatView = document.getElementById('chatView');
+    const logsView = document.getElementById('logsView');
+    const settingsView = document.getElementById('settingsView');
+    
+    console.log('🎛️ Views found:', {
+      chatView: !!chatView,
+      logsView: !!logsView, 
+      settingsView: !!settingsView
+    });
+    
+    if (chatView) {
+      chatView.style.display = 'none';
+      console.log('🎛️ Chat view hidden');
+    }
+    if (logsView) {
+      logsView.style.display = 'none';
+      console.log('🎛️ Logs view hidden');
+    }
+    if (document.getElementById('automationView')) {
+      document.getElementById('automationView').style.display = 'none';
+      console.log('🎛️ Automation view hidden');
+    }
+    if (document.getElementById('notesView')) {
+      document.getElementById('notesView').style.display = 'none';
+      console.log('🎛️ Notes view hidden');
+    }
+
+    // Show settings view with multiple approaches
+    if (settingsView) {
+      // Debug parent elements
+      console.log('🎛️ Settings view parent:', settingsView.parentElement);
+      console.log('🎛️ Settings view parent display:', window.getComputedStyle(settingsView.parentElement).display);
+      
+      // Remove the inline style that might be hiding it
+      settingsView.removeAttribute('style');
+      
+      // Check all parent elements up to body
+      let parent = settingsView.parentElement;
+      while (parent && parent !== document.body) {
+        console.log('🎛️ Parent element:', parent.tagName, parent.id, parent.className);
+        console.log('🎛️ Parent display:', window.getComputedStyle(parent).display);
+        parent = parent.parentElement;
+      }
+      
+      // Create overlay approach - move element to body temporarily
+      const originalParent = settingsView.parentElement;
+      const originalNextSibling = settingsView.nextElementSibling;
+      
+      // Move to body as first child
+      document.body.insertBefore(settingsView, document.body.firstChild);
+      
+      // Explicitly set display and visibility with overlay styles
+      settingsView.style.cssText = `
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        z-index: 9999 !important;
+        background-color: white !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        overflow-y: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+      `;
+      
+      // Store original position info for restoration
+      settingsView.setAttribute('data-original-parent', originalParent ? originalParent.id : '');
+      
+      // Scroll to top to ensure it's visible
+      settingsView.scrollIntoView({ behavior: 'instant', block: 'start' });
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+      
+      console.log('🎛️ Settings view shown with style:', settingsView.style.cssText);
+      console.log('🎛️ Settings view computed style:', window.getComputedStyle(settingsView).display);
+      console.log('🎛️ Settings view bounding rect:', settingsView.getBoundingClientRect());
+    } else {
+      console.error('🎛️ Settings view not found!');
+    }
     this.currentView = 'settings';
   }
 
@@ -1318,7 +1936,18 @@ class ChromeAiAgent {
   showError(message) {
     // TODO: Implement proper toast/notification system
     console.error('ChromeAiAgent Error:', message);
-    alert('Error: ' + message);
+    
+    let displayMessage = 'An error occurred';
+    
+    if (typeof message === 'string') {
+      displayMessage = message;
+    } else if (message && message.message) {
+      displayMessage = message.message;
+    } else if (message) {
+      displayMessage = JSON.stringify(message);
+    }
+    
+    alert('Error: ' + displayMessage);
   }
 
   showSuccess(message) {
@@ -1650,7 +2279,7 @@ class ChromeAiAgent {
         provider: provider
       });
       
-      if (response.success && response.token && response.method === 'oauth') {
+      if (response && response.success && response.token && response.method === 'oauth') {
         this.updateOAuthUI(provider, true);
         this.showAuthStatus('Using OAuth authentication', 'success');
       } else {
@@ -1959,50 +2588,479 @@ class ChromeAiAgent {
       this.showError('Error saving log settings');
     }
   }
+
+  // Tab Management
+  switchTab(tabName) {
+    // Hide all tab contents
+    const tabContents = document.querySelectorAll('.tab-content');
+    tabContents.forEach(content => {
+      content.classList.remove('active');
+      content.style.display = 'none';
+    });
+
+    // Remove active class from all tabs
+    const tabButtons = document.querySelectorAll('.tab-button');
+    tabButtons.forEach(button => button.classList.remove('active'));
+
+    // Show selected tab content
+    const targetContent = document.getElementById(`${tabName}View`);
+    const targetButton = document.getElementById(`${tabName}Tab`);
+
+    if (targetContent) {
+      targetContent.classList.add('active');
+      targetContent.style.display = 'flex';
+    }
+
+    if (targetButton) {
+      targetButton.classList.add('active');
+    }
+
+    // Load content for specific tabs
+    if (tabName === 'automation') {
+      this.loadAutomationHistory();
+    } else if (tabName === 'notes') {
+      this.loadNotes();
+    }
+
+    this.currentView = tabName;
+  }
+
+  // Automation Methods
+  async executeAutomationCommand() {
+    const automationInput = document.getElementById('automationInput');
+    const executeBtn = document.getElementById('executeBtn');
+    
+    if (!automationInput || !executeBtn) return;
+
+    const command = automationInput.value.trim();
+    if (!command) return;
+
+    executeBtn.disabled = true;
+    executeBtn.innerHTML = '<span class="execute-icon">⏳</span> Executing...';
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'automationCommand',
+        command: command
+      });
+
+      if (response.success) {
+        this.addAutomationResult(command, response.result, true);
+        automationInput.value = '';
+      } else {
+        this.addAutomationResult(command, response.error, false);
+      }
+    } catch (error) {
+      console.error('Automation command error:', error);
+      this.addAutomationResult(command, error.message, false);
+    } finally {
+      executeBtn.disabled = false;
+      executeBtn.innerHTML = '<span class="execute-icon">⚡</span> Execute';
+    }
+  }
+
+  async executeQuickAction(command) {
+    const automationInput = document.getElementById('automationInput');
+    if (automationInput) {
+      automationInput.value = command;
+    }
+    await this.executeAutomationCommand();
+  }
+
+  addAutomationResult(command, result, success) {
+    const resultsContainer = document.getElementById('resultsContainer');
+    if (!resultsContainer) return;
+
+    // Remove "no results" message if it exists
+    const noResults = resultsContainer.querySelector('.no-results');
+    if (noResults) {
+      noResults.remove();
+    }
+
+    const resultItem = document.createElement('div');
+    resultItem.className = `result-item ${success ? 'result-success' : 'result-error'}`;
+
+    const timestamp = new Date().toLocaleTimeString();
+    
+    resultItem.innerHTML = `
+      <div class="result-header">
+        <div class="result-command">${this.escapeHtml(command)}</div>
+        <div class="result-timestamp">${timestamp}</div>
+      </div>
+      <div class="result-details">${this.escapeHtml(JSON.stringify(result, null, 2))}</div>
+    `;
+
+    resultsContainer.insertBefore(resultItem, resultsContainer.firstChild);
+
+    // Keep only last 20 results
+    const results = resultsContainer.querySelectorAll('.result-item');
+    if (results.length > 20) {
+      results[results.length - 1].remove();
+    }
+
+    // Scroll to top
+    resultsContainer.scrollTop = 0;
+  }
+
+  clearAutomationResults() {
+    const resultsContainer = document.getElementById('resultsContainer');
+    if (resultsContainer) {
+      resultsContainer.innerHTML = '<div class="no-results">No automation commands executed yet.</div>';
+    }
+  }
+
+  loadAutomationHistory() {
+    // Load any saved automation history from storage if needed
+    console.log('Loading automation history...');
+  }
+
+  // Notes Methods
+  async loadNotes() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'getAutomationNotes'
+      });
+
+      if (response.success) {
+        this.displayNotes(response.notes);
+      }
+    } catch (error) {
+      console.error('Error loading notes:', error);
+    }
+  }
+
+  displayNotes(notes) {
+    const notesContainer = document.getElementById('notesContainer');
+    if (!notesContainer) return;
+
+    if (!notes || notes.length === 0) {
+      notesContainer.innerHTML = '<div class="no-notes">No notes generated yet. Use automation commands to create smart notes!</div>';
+      return;
+    }
+
+    notesContainer.innerHTML = notes.map((note, index) => `
+      <div class="note-item">
+        <div class="note-header">
+          <div>
+            <div class="note-title">${this.escapeHtml(note.title)}</div>
+            <a href="${note.url}" class="note-url" target="_blank">${note.url}</a>
+          </div>
+          <div class="note-timestamp">${new Date(note.timestamp).toLocaleString()}</div>
+        </div>
+        <div class="note-content">${this.escapeHtml(note.content)}</div>
+        ${note.tags && note.tags.length > 0 ? `
+          <div class="note-tags">
+            ${note.tags.map(tag => `<span class="note-tag">${this.escapeHtml(tag)}</span>`).join('')}
+          </div>
+        ` : ''}
+        <div class="note-actions">
+          <button class="note-action-btn" onclick="navigator.clipboard.writeText('${this.escapeHtml(note.content)}')">📋 Copy</button>
+          <button class="note-action-btn delete-note-btn" data-index="${index}">🗑️ Delete</button>
+        </div>
+      </div>
+    `).join('');
+
+    // Add delete handlers
+    const deleteButtons = notesContainer.querySelectorAll('.delete-note-btn');
+    deleteButtons.forEach(button => {
+      button.addEventListener('click', async (e) => {
+        const index = parseInt(e.target.getAttribute('data-index'));
+        await this.deleteNote(index);
+      });
+    });
+  }
+
+  async deleteNote(index) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'deleteNote',
+        index: index
+      });
+
+      if (response.success) {
+        await this.loadNotes(); // Refresh the list
+      }
+    } catch (error) {
+      console.error('Error deleting note:', error);
+    }
+  }
+
+  // Check if message contains automation commands
+  async isAutomationCommand(message) {
+    const automationKeywords = [
+      'click', 'press', 'tap', 'type', 'enter', 'input', 'fill', 'complete',
+      'scroll', 'navigate', 'go to', 'open', 'screenshot', 'extract', 'get',
+      'collect', 'highlight', 'organize', 'take note'
+    ];
+    
+    const lowerMessage = message.toLowerCase();
+    return automationKeywords.some(keyword => lowerMessage.includes(keyword));
+  }
+
+  // Execute automation command from chat
+  async executeAutomationFromChat(message) {
+    const input = document.getElementById('messageInput');
+    
+    // Refresh page context before automation
+    await this.loadPageContext();
+    
+    // Add user message to chat
+    this.addMessage('user', message);
+    input.value = '';
+    this.adjustTextareaHeight(input);
+    this.updateSendButton();
+
+    // Check if this is a navigation action that should work from any page
+    const lowerMessage = message.toLowerCase();
+    const isNavigationAction = lowerMessage.includes('new tab') || 
+                              lowerMessage.includes('navigate to') || 
+                              lowerMessage.includes('go to') ||
+                              lowerMessage.includes('open') && (lowerMessage.includes('tab') || lowerMessage.includes('page'));
+
+    // Check if page is restricted before attempting automation (except for navigation actions)
+    if (this.pageInfo && this.pageInfo.isRestricted && !isNavigationAction) {
+      const restrictionMessage = `❌ Automation not available: This is a ${this.getPageType(this.pageInfo.url)}. 
+
+Browser security restrictions prevent automation on:
+• Chrome internal pages (chrome://)
+• Extension pages (chrome-extension://)
+• Web stores (Chrome Web Store, Firefox Add-ons, etc.)
+• Browser settings pages
+
+Please navigate to a regular website to use automation features, or use navigation commands like "open new tab with [URL]".`;
+      
+      this.addMessage('assistant', restrictionMessage);
+      return;
+    }
+
+    // Show typing indicator
+    const typingId = this.addTypingIndicator();
+    
+    try {
+      console.log('🤖 Executing automation command:', message);
+      
+      // Send automation command to background
+      const response = await chrome.runtime.sendMessage({
+        action: 'automationCommand',
+        command: message
+      });
+      
+      // Remove typing indicator
+      this.removeTypingIndicator(typingId);
+      
+      if (response.success) {
+        // Add successful automation result to chat
+        let resultDetails = 'Command completed';
+        if (response.result) {
+          if (typeof response.result === 'object') {
+            // Format object results nicely
+            if (response.result.success && response.result.action) {
+              resultDetails = `${response.result.action}${response.result.element ? ` on ${response.result.element}` : ''}`;
+            } else {
+              resultDetails = JSON.stringify(response.result, null, 2);
+            }
+          } else {
+            resultDetails = response.result;
+          }
+        }
+        const resultMessage = `✅ Automation executed successfully: ${resultDetails}`;
+        this.addMessage('assistant', resultMessage);
+        
+        // Add automation log to history
+        await this.logAutomationAction(message, response.result);
+        
+      } else {
+        // Add error message to chat with better context
+        let errorMessage = `❌ Automation failed: ${response.error || 'Unknown error'}`;
+        
+        // Add helpful context for common errors
+        if (response.error && response.error.includes('cannot be scripted')) {
+          errorMessage += `\n\n💡 This page cannot be automated due to browser security restrictions. Try navigating to a regular website.`;
+        } else if (response.error && response.error.includes('Element not found')) {
+          errorMessage += `\n\n💡 Try refreshing the page or using a different element selector.`;
+        }
+        
+        this.addMessage('assistant', errorMessage);
+      }
+      
+    } catch (error) {
+      console.error('🤖 Automation command failed:', error);
+      
+      // Remove typing indicator
+      this.removeTypingIndicator(typingId);
+      
+      // Add error message to chat with helpful context
+      let errorMessage = `❌ Automation error: ${error.message}`;
+      
+      if (error.message.includes('cannot be scripted')) {
+        errorMessage += `\n\n💡 This page type doesn't allow automation. Please navigate to a regular website to use automation features.`;
+      }
+      
+      this.addMessage('assistant', errorMessage);
+    }
+  }
+
+  // Log automation action for history
+  async logAutomationAction(command, result) {
+    try {
+      const timestamp = new Date().toISOString();
+      const logEntry = {
+        timestamp,
+        command,
+        result,
+        url: this.pageInfo?.url || 'unknown',
+        title: this.pageInfo?.title || 'unknown'
+      };
+      
+      // Send to background for storage
+      await chrome.runtime.sendMessage({
+        action: 'logAutomationAction',
+        data: logEntry
+      });
+      
+    } catch (error) {
+      console.error('Failed to log automation action:', error);
+    }
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
 }
 
 // Function to extract page content - runs in the context of the webpage
 function extractPageContent() {
   try {
-    // Remove script and style elements
-    const scripts = document.querySelectorAll('script, style, noscript');
-    scripts.forEach(el => el.remove());
-    
-    // Get main content areas (prioritize main content)
-    const contentSelectors = [
-      'main',
-      'article', 
-      '[role="main"]',
-      '.main-content',
-      '.content',
-      'body'
-    ];
-    
-    let mainContent = '';
-    for (const selector of contentSelectors) {
-      const element = document.querySelector(selector);
-      if (element) {
-        mainContent = element.innerText || element.textContent || '';
-        break;
+    // Helper function to generate CSS selector for an element (defined in page context)
+    function getElementSelector(element) {
+      if (element.id) {
+        return `#${element.id}`;
       }
+      
+      if (element.className) {
+        const classes = element.className.split(' ').filter(cls => cls);
+        if (classes.length > 0) {
+          return `.${classes[0]}`;
+        }
+      }
+      
+      // Fallback to tag name with nth-child if needed
+      const parent = element.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(child => child.tagName === element.tagName);
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(element) + 1;
+          return `${element.tagName.toLowerCase()}:nth-child(${index})`;
+        }
+      }
+      
+      return element.tagName.toLowerCase();
     }
     
-    // Clean up the text
-    let content = mainContent
-      .replace(/\s+/g, ' ') // Replace multiple whitespace with single space
-      .replace(/\n\s*\n/g, '\n') // Remove empty lines
+    // Get both HTML structure and text content for better AI understanding
+    const pageData = {
+      html: document.documentElement.outerHTML,
+      text: '',
+      elements: []
+    };
+    
+    // Extract clean text content
+    const textContent = document.body ? document.body.innerText || document.body.textContent : '';
+    pageData.text = textContent
+      .replace(/\s+/g, ' ')
+      .replace(/\n\s*\n/g, '\n')
       .trim();
     
-    // Limit content length to prevent huge payloads
-    if (content.length > 2000) {
-      content = content.substring(0, 2000) + '...';
+    // Extract interactive elements for automation
+    const interactiveElements = document.querySelectorAll(`
+      button, input, textarea, select, a[href], 
+      [onclick], [role="button"], [tabindex], 
+      form, [contenteditable], img[alt], 
+      h1, h2, h3, h4, h5, h6, 
+      .btn, .button, .link, .menu, .nav
+    `);
+    
+    interactiveElements.forEach((el, index) => {
+      if (el.offsetParent !== null || el.tagName === 'INPUT') { // visible elements
+        const elementInfo = {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || '',
+          className: el.className || '',
+          text: (el.textContent || el.value || el.alt || '').trim().substring(0, 50),
+          type: el.type || '',
+          placeholder: el.placeholder || '',
+          href: el.href || '',
+          role: el.getAttribute('role') || '',
+          selector: getElementSelector(el)
+        };
+        
+        if (elementInfo.text || elementInfo.id || elementInfo.placeholder) {
+          pageData.elements.push(elementInfo);
+        }
+      }
+    });
+    
+    // Combine all information into a comprehensive page source
+    let fullPageSource = `=== WEBPAGE INFORMATION ===
+Title: ${document.title}
+URL: ${window.location.href}
+
+=== HTML SOURCE ===
+${pageData.html}
+
+=== INTERACTIVE ELEMENTS ===
+${pageData.elements.map((el, i) => 
+  `${i + 1}. ${el.tag}${el.id ? `#${el.id}` : ''}${el.className ? `.${el.className.split(' ')[0]}` : ''} - "${el.text}" (selector: ${el.selector})`
+).join('\n')}
+
+=== PAGE TEXT CONTENT ===
+${pageData.text}`;
+    
+    // Limit total length but keep essential information
+    if (fullPageSource.length > 50000) {
+      // Truncate HTML but keep elements and text
+      const htmlStart = fullPageSource.indexOf('=== HTML SOURCE ===') + 20;
+      const htmlEnd = fullPageSource.indexOf('=== INTERACTIVE ELEMENTS ===');
+      const beforeHtml = fullPageSource.substring(0, htmlStart);
+      const afterHtml = fullPageSource.substring(htmlEnd);
+      const truncatedHtml = pageData.html.substring(0, 20000) + '\n[HTML TRUNCATED...]';
+      
+      fullPageSource = beforeHtml + truncatedHtml + '\n\n' + afterHtml;
     }
     
-    return content;
+    return fullPageSource;
   } catch (error) {
     console.error('Error extracting page content:', error);
-    return '';
+    return `Error extracting page content: ${error.message}`;
   }
+}
+
+// Helper function to generate CSS selector for an element
+function getElementSelector(element) {
+  if (element.id) {
+    return `#${element.id}`;
+  }
+  
+  if (element.className) {
+    const classes = element.className.split(' ').filter(cls => cls);
+    if (classes.length > 0) {
+      return `.${classes[0]}`;
+    }
+  }
+  
+  // Fallback to tag name with nth-child if needed
+  const parent = element.parentElement;
+  if (parent) {
+    const siblings = Array.from(parent.children).filter(child => child.tagName === element.tagName);
+    if (siblings.length > 1) {
+      const index = siblings.indexOf(element) + 1;
+      return `${element.tagName.toLowerCase()}:nth-child(${index})`;
+    }
+  }
+  
+  return element.tagName.toLowerCase();
 }
 
 // Global agent instance for onclick handlers

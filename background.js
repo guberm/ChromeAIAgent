@@ -1,17 +1,1112 @@
-// Background service worker for ChromeAiAgent
+﻿// Background service worker for ChromeAiAgent
 // Import MCP-compliant provider interface
-importScripts('mcp-provider-interface.js');
+// Temporarily commented out to fix service worker registration
+// importScripts('mcp-provider-interface.js');
 
-// Initialize MCP components with error handling
+// Content script function for automation (defined globally for serialization)
+function automationContentScript(action, params) {
+    // Enhanced element finding with multiple strategies
+    const findElement = (selector) => {
+      console.log('[AutomationScript] Trying to find element with selector:', selector);
+      
+      // Strategy 1: Direct selector
+      let element = document.querySelector(selector);
+      if (element) {
+        console.log('[AutomationScript] Found element with direct selector');
+        return element;
+      }
+      
+      // Strategy 2: Case-insensitive class search
+      if (selector.startsWith('.')) {
+        const className = selector.substring(1);
+        element = document.querySelector(`[class*="${className}" i]`);
+        if (element) {
+          console.log('[AutomationScript] Found element with case-insensitive class search');
+          return element;
+        }
+        
+        // Try finding by partial class name
+        const elements = document.querySelectorAll('[class]');
+        for (let el of elements) {
+          if (el.className.toLowerCase().includes(className.toLowerCase())) {
+            console.log('[AutomationScript] Found element with partial class match');
+            return el;
+          }
+        }
+      }
+      
+      // Strategy 3: Text content search for buttons/links
+      if (selector.includes('button') || selector.includes('btn') || selector.includes('link')) {
+        const searchText = selector.toLowerCase();
+        const clickableElements = document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], [onclick]');
+        for (let el of clickableElements) {
+          const text = el.textContent.toLowerCase();
+          if (text.includes('update') && searchText.includes('update')) {
+            console.log('[AutomationScript] Found element by text content match');
+            return el;
+          }
+          if (text.includes('profile') && searchText.includes('profile')) {
+            console.log('[AutomationScript] Found element by text content match');
+            return el;
+          }
+          if (text.includes('save') && searchText.includes('save')) {
+            console.log('[AutomationScript] Found element by text content match');
+            return el;
+          }
+        }
+      }
+      
+      // Strategy 4: ID search with partial matching
+      if (selector.startsWith('#')) {
+        const idName = selector.substring(1);
+        element = document.querySelector(`[id*="${idName}" i]`);
+        if (element) {
+          console.log('[AutomationScript] Found element with partial ID match');
+          return element;
+        }
+      }
+      
+      // Strategy 5: Attribute search for common patterns
+      const commonSelectors = [
+        `[data-testid*="${selector.replace(/[.#]/, '')}" i]`,
+        `[aria-label*="${selector.replace(/[.#]/, '')}" i]`,
+        `[name*="${selector.replace(/[.#]/, '')}" i]`,
+        `[placeholder*="${selector.replace(/[.#]/, '')}" i]`
+      ];
+      
+      for (let altSelector of commonSelectors) {
+        try {
+          element = document.querySelector(altSelector);
+          if (element) {
+            console.log('[AutomationScript] Found element with attribute search:', altSelector);
+            return element;
+          }
+        } catch (e) {
+          // Invalid selector, continue
+        }
+      }
+      
+      console.log('[AutomationScript] Element not found with any strategy');
+      return null;
+    };
+
+    const automation = {
+      click: (selector) => {
+        const element = findElement(selector);
+        if (element) {
+          element.click();
+          return { success: true, action: 'clicked', element: selector, actualElement: element.tagName + (element.id ? '#' + element.id : '') + (element.className ? '.' + element.className.split(' ')[0] : '') };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      type: (selector, text) => {
+        const element = findElement(selector);
+        if (element) {
+          element.value = text;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          return { success: true, action: 'typed', element: selector, text, actualElement: element.tagName + (element.id ? '#' + element.id : '') + (element.className ? '.' + element.className.split(' ')[0] : '') };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      navigate: (url) => {
+        window.location.href = url;
+        return { success: true, action: 'navigated', url };
+      },
+
+      newTab: (url) => {
+        window.open(url, '_blank');
+        return { success: true, action: 'new tab opened', url };
+      },
+
+      wait: (ms) => {
+        return new Promise(resolve => {
+          setTimeout(() => resolve({ success: true, action: 'waited', duration: ms }), ms);
+        });
+      },
+
+      extractPageElements: () => {
+        const elements = [];
+        
+        // Get clickable elements
+        const clickable = document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], [onclick]');
+        clickable.forEach(el => {
+          if (el.offsetParent !== null) { // visible elements only
+            elements.push({
+              type: 'clickable',
+              tag: el.tagName.toLowerCase(),
+              text: el.textContent?.trim().substring(0, 100) || '',
+              id: el.id || '',
+              className: el.className || '',
+              selector: el.id ? `#${el.id}` : `.${el.className.split(' ')[0]}` || el.tagName.toLowerCase()
+            });
+          }
+        });
+        
+        // Get input elements
+        const inputs = document.querySelectorAll('input, textarea, select');
+        inputs.forEach(el => {
+          if (el.offsetParent !== null) {
+            elements.push({
+              type: 'input',
+              tag: el.tagName.toLowerCase(),
+              inputType: el.type || '',
+              placeholder: el.placeholder || '',
+              id: el.id || '',
+              className: el.className || '',
+              selector: el.id ? `#${el.id}` : `.${el.className.split(' ')[0]}` || el.tagName.toLowerCase()
+            });
+          }
+        });
+        
+        console.log('[AutomationScript] Found elements:', elements);
+        return elements.slice(0, 50); // Limit to 50 elements
+      },
+
+      // Debug function to list all elements
+      debugListElements: () => {
+        const allElements = document.querySelectorAll('*');
+        const elementInfo = [];
+        
+        allElements.forEach(el => {
+          if (el.offsetParent !== null && (el.id || el.className || el.textContent.trim())) {
+            elementInfo.push({
+              tag: el.tagName.toLowerCase(),
+              id: el.id || '',
+              className: el.className || '',
+              text: el.textContent?.trim().substring(0, 50) || '',
+              selector: el.id ? `#${el.id}` : (el.className ? `.${el.className.split(' ')[0]}` : el.tagName.toLowerCase())
+            });
+          }
+        });
+        
+        console.log('[AutomationScript] All visible elements:', elementInfo);
+        return { success: true, action: 'debug_listed', count: elementInfo.length, elements: elementInfo.slice(0, 100) };
+      },
+
+      // Mouse Events Actions
+      hover: (selector) => {
+        const element = findElement(selector);
+        if (element) {
+          const event = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+          element.dispatchEvent(event);
+          return { success: true, action: 'hovered', element: selector, actualElement: element.tagName + (element.id ? '#' + element.id : '') + (element.className ? '.' + element.className.split(' ')[0] : '') };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      mouseDown: (selector, button = 0) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('mousedown', { 
+            bubbles: true, 
+            cancelable: true, 
+            button: button,
+            buttons: 1 << button 
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'mousedown', element: selector, button };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      mouseUp: (selector, button = 0) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('mouseup', { 
+            bubbles: true, 
+            cancelable: true, 
+            button: button,
+            buttons: 0 
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'mouseup', element: selector, button };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      mouseMove: (selector, offsetX = 0, offsetY = 0) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const rect = element.getBoundingClientRect();
+          const event = new MouseEvent('mousemove', { 
+            bubbles: true, 
+            cancelable: true,
+            clientX: rect.left + offsetX,
+            clientY: rect.top + offsetY
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'mousemove', element: selector, offsetX, offsetY };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      mouseEnter: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('mouseenter', { bubbles: false, cancelable: true });
+          element.dispatchEvent(event);
+          return { success: true, action: 'mouseenter', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      mouseLeave: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('mouseleave', { bubbles: false, cancelable: true });
+          element.dispatchEvent(event);
+          return { success: true, action: 'mouseleave', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      doubleClick: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('dblclick', { bubbles: true, cancelable: true });
+          element.dispatchEvent(event);
+          return { success: true, action: 'doubleclicked', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      rightClick: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new MouseEvent('contextmenu', { 
+            bubbles: true, 
+            cancelable: true,
+            button: 2,
+            buttons: 2
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'rightclicked', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      scroll: (selector, direction = 'down', amount = 100) => {
+        const element = selector ? document.querySelector(selector) : window;
+        if (element || selector === null) {
+          const target = element || window;
+          
+          if (direction === 'down') {
+            target.scrollBy ? target.scrollBy(0, amount) : target.scrollTo(0, target.scrollY + amount);
+          } else if (direction === 'up') {
+            target.scrollBy ? target.scrollBy(0, -amount) : target.scrollTo(0, target.scrollY - amount);
+          } else if (direction === 'left') {
+            target.scrollBy ? target.scrollBy(-amount, 0) : target.scrollTo(target.scrollX - amount, 0);
+          } else if (direction === 'right') {
+            target.scrollBy ? target.scrollBy(amount, 0) : target.scrollTo(target.scrollX + amount, 0);
+          }
+          
+          return { success: true, action: 'scrolled', element: selector || 'window', direction, amount };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      scrollToElement: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return { success: true, action: 'scrolled_to_element', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Keyboard Events Actions
+      keyDown: (selector, key, modifiers = {}) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          const event = new KeyboardEvent('keydown', {
+            key: key,
+            code: key,
+            bubbles: true,
+            cancelable: true,
+            ctrlKey: modifiers.ctrl || false,
+            altKey: modifiers.alt || false,
+            shiftKey: modifiers.shift || false,
+            metaKey: modifiers.meta || false
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'keydown', element: selector, key, modifiers };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      keyUp: (selector, key, modifiers = {}) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          const event = new KeyboardEvent('keyup', {
+            key: key,
+            code: key,
+            bubbles: true,
+            cancelable: true,
+            ctrlKey: modifiers.ctrl || false,
+            altKey: modifiers.alt || false,
+            shiftKey: modifiers.shift || false,
+            metaKey: modifiers.meta || false
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'keyup', element: selector, key, modifiers };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      keyPress: (selector, key, modifiers = {}) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          const event = new KeyboardEvent('keypress', {
+            key: key,
+            code: key,
+            bubbles: true,
+            cancelable: true,
+            ctrlKey: modifiers.ctrl || false,
+            altKey: modifiers.alt || false,
+            shiftKey: modifiers.shift || false,
+            metaKey: modifiers.meta || false
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'keypress', element: selector, key, modifiers };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      sendKeys: (selector, keys) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          
+          // Handle special key combinations
+          if (keys.includes('+')) {
+            const parts = keys.split('+');
+            const modifiers = {};
+            let mainKey = parts[parts.length - 1];
+            
+            parts.forEach(part => {
+              if (part.toLowerCase() === 'ctrl') modifiers.ctrl = true;
+              if (part.toLowerCase() === 'alt') modifiers.alt = true;
+              if (part.toLowerCase() === 'shift') modifiers.shift = true;
+              if (part.toLowerCase() === 'meta') modifiers.meta = true;
+            });
+            
+            const event = new KeyboardEvent('keydown', {
+              key: mainKey,
+              code: mainKey,
+              bubbles: true,
+              cancelable: true,
+              ...modifiers
+            });
+            element.dispatchEvent(event);
+          } else {
+            // Send individual characters
+            for (let char of keys) {
+              const event = new KeyboardEvent('keypress', {
+                key: char,
+                code: char,
+                bubbles: true,
+                cancelable: true
+              });
+              element.dispatchEvent(event);
+            }
+          }
+          
+          return { success: true, action: 'keys_sent', element: selector, keys };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      typeText: (selector, text, delay = 0) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          element.value = '';
+          
+          const typeChar = (index) => {
+            if (index < text.length) {
+              element.value += text[index];
+              element.dispatchEvent(new Event('input', { bubbles: true }));
+              
+              if (delay > 0) {
+                setTimeout(() => typeChar(index + 1), delay);
+              } else {
+                typeChar(index + 1);
+              }
+            } else {
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          };
+          
+          typeChar(0);
+          return { success: true, action: 'text_typed', element: selector, text, delay };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Form Actions
+      focus: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.focus();
+          return { success: true, action: 'focused', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      blur: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.blur();
+          return { success: true, action: 'blurred', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      select: (selector, value) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          if (element.tagName.toLowerCase() === 'select') {
+            element.value = value;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, action: 'selected', element: selector, value };
+          } else if (element.type === 'checkbox' || element.type === 'radio') {
+            element.checked = value;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, action: 'checked', element: selector, checked: value };
+          }
+        }
+        return { success: false, error: 'Element not found or not selectable' };
+      },
+
+      selectOption: (selector, optionValue) => {
+        const element = document.querySelector(selector);
+        if (element && element.tagName.toLowerCase() === 'select') {
+          const option = element.querySelector(`option[value="${optionValue}"]`);
+          if (option) {
+            element.value = optionValue;
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, action: 'option_selected', element: selector, value: optionValue };
+          }
+          return { success: false, error: 'Option not found' };
+        }
+        return { success: false, error: 'Element not found or not a select element' };
+      },
+
+      check: (selector, checked = true) => {
+        const element = document.querySelector(selector);
+        if (element && (element.type === 'checkbox' || element.type === 'radio')) {
+          element.checked = checked;
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, action: 'checked', element: selector, checked };
+        }
+        return { success: false, error: 'Element not found or not checkable' };
+      },
+
+      submit: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          if (element.tagName.toLowerCase() === 'form') {
+            element.submit();
+            return { success: true, action: 'form_submitted', element: selector };
+          } else if (element.type === 'submit') {
+            element.click();
+            return { success: true, action: 'submit_clicked', element: selector };
+          }
+        }
+        return { success: false, error: 'Element not found or not submittable' };
+      },
+
+      reset: (selector) => {
+        const element = document.querySelector(selector);
+        if (element && element.tagName.toLowerCase() === 'form') {
+          element.reset();
+          return { success: true, action: 'form_reset', element: selector };
+        }
+        return { success: false, error: 'Element not found or not a form' };
+      },
+
+      uploadFile: (selector, fileData) => {
+        const element = document.querySelector(selector);
+        if (element && element.type === 'file') {
+          // Create a File object from the data
+          const file = new File([fileData.content], fileData.name, {
+            type: fileData.type || 'application/octet-stream'
+          });
+          
+          // Create FileList-like object
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          element.files = dataTransfer.files;
+          
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, action: 'file_uploaded', element: selector, filename: fileData.name };
+        }
+        return { success: false, error: 'Element not found or not a file input' };
+      },
+
+      clearInput: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.value = '';
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, action: 'input_cleared', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Drag & Drop Actions
+      dragStart: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('dragstart', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'dragstart', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      drag: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('drag', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'drag', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      dragEnter: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('dragenter', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'dragenter', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      dragOver: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('dragover', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'dragover', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      dragLeave: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('dragleave', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'dragleave', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      drop: (selector, data = {}) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const dataTransfer = new DataTransfer();
+          if (data.text) dataTransfer.setData('text/plain', data.text);
+          if (data.html) dataTransfer.setData('text/html', data.html);
+          if (data.url) dataTransfer.setData('text/uri-list', data.url);
+          
+          const event = new DragEvent('drop', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dataTransfer
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'drop', element: selector, data };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      dragEnd: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new DragEvent('dragend', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: new DataTransfer()
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'dragend', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      dragAndDrop: (sourceSelector, targetSelector, data = {}) => {
+        const source = document.querySelector(sourceSelector);
+        const target = document.querySelector(targetSelector);
+        
+        if (!source || !target) {
+          return { success: false, error: 'Source or target element not found' };
+        }
+
+        // Simulate complete drag and drop sequence
+        const dataTransfer = new DataTransfer();
+        if (data.text) dataTransfer.setData('text/plain', data.text);
+        if (data.html) dataTransfer.setData('text/html', data.html);
+        if (data.url) dataTransfer.setData('text/uri-list', data.url);
+
+        // dragstart on source
+        source.dispatchEvent(new DragEvent('dragstart', {
+          bubbles: true, cancelable: true, dataTransfer
+        }));
+
+        // dragenter and dragover on target
+        target.dispatchEvent(new DragEvent('dragenter', {
+          bubbles: true, cancelable: true, dataTransfer
+        }));
+        target.dispatchEvent(new DragEvent('dragover', {
+          bubbles: true, cancelable: true, dataTransfer
+        }));
+
+        // drop on target
+        target.dispatchEvent(new DragEvent('drop', {
+          bubbles: true, cancelable: true, dataTransfer
+        }));
+
+        // dragend on source
+        source.dispatchEvent(new DragEvent('dragend', {
+          bubbles: true, cancelable: true, dataTransfer
+        }));
+
+        return { 
+          success: true, 
+          action: 'drag_and_drop', 
+          source: sourceSelector, 
+          target: targetSelector,
+          data 
+        };
+      },
+
+      // Touch Events Actions
+      touchStart: (selector, touches = [{ x: 0, y: 0 }]) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const touchList = touches.map((touch, index) => ({
+            identifier: index,
+            target: element,
+            clientX: touch.x,
+            clientY: touch.y,
+            pageX: touch.x,
+            pageY: touch.y
+          }));
+          
+          const event = new TouchEvent('touchstart', {
+            bubbles: true,
+            cancelable: true,
+            touches: touchList,
+            targetTouches: touchList,
+            changedTouches: touchList
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'touchstart', element: selector, touches };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      touchMove: (selector, touches = [{ x: 0, y: 0 }]) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const touchList = touches.map((touch, index) => ({
+            identifier: index,
+            target: element,
+            clientX: touch.x,
+            clientY: touch.y,
+            pageX: touch.x,
+            pageY: touch.y
+          }));
+          
+          const event = new TouchEvent('touchmove', {
+            bubbles: true,
+            cancelable: true,
+            touches: touchList,
+            targetTouches: touchList,
+            changedTouches: touchList
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'touchmove', element: selector, touches };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      touchEnd: (selector, touches = [{ x: 0, y: 0 }]) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const touchList = touches.map((touch, index) => ({
+            identifier: index,
+            target: element,
+            clientX: touch.x,
+            clientY: touch.y,
+            pageX: touch.x,
+            pageY: touch.y
+          }));
+          
+          const event = new TouchEvent('touchend', {
+            bubbles: true,
+            cancelable: true,
+            touches: [],
+            targetTouches: [],
+            changedTouches: touchList
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'touchend', element: selector, touches };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      touchCancel: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const event = new TouchEvent('touchcancel', {
+            bubbles: true,
+            cancelable: true,
+            touches: [],
+            targetTouches: [],
+            changedTouches: []
+          });
+          element.dispatchEvent(event);
+          return { success: true, action: 'touchcancel', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Page/Window Actions
+      refresh: () => {
+        window.location.reload();
+        return { success: true, action: 'page_refreshed' };
+      },
+
+      goBack: () => {
+        window.history.back();
+        return { success: true, action: 'navigated_back' };
+      },
+
+      goForward: () => {
+        window.history.forward();
+        return { success: true, action: 'navigated_forward' };
+      },
+
+      // Content Manipulation Actions
+      getText: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          return { success: true, action: 'text_retrieved', element: selector, text: element.textContent };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      setText: (selector, text) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.textContent = text;
+          return { success: true, action: 'text_set', element: selector, text };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      getAttribute: (selector, attribute) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const value = element.getAttribute(attribute);
+          return { success: true, action: 'attribute_retrieved', element: selector, attribute, value };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      setAttribute: (selector, attribute, value) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.setAttribute(attribute, value);
+          return { success: true, action: 'attribute_set', element: selector, attribute, value };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      addClass: (selector, className) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.classList.add(className);
+          return { success: true, action: 'class_added', element: selector, className };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      removeClass: (selector, className) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.classList.remove(className);
+          return { success: true, action: 'class_removed', element: selector, className };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      toggleClass: (selector, className) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const added = element.classList.toggle(className);
+          return { success: true, action: 'class_toggled', element: selector, className, added };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      setInnerHTML: (selector, html) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.innerHTML = html;
+          return { success: true, action: 'innerHTML_set', element: selector, html: html.substring(0, 100) + '...' };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      getInnerHTML: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          return { success: true, action: 'innerHTML_retrieved', element: selector, html: element.innerHTML };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Visual Actions
+      highlight: (selector, color = 'yellow', duration = 3000) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          const originalBackground = element.style.backgroundColor;
+          const originalBorder = element.style.border;
+          
+          element.style.backgroundColor = color;
+          element.style.border = `2px solid ${color === 'yellow' ? 'orange' : 'red'}`;
+          element.style.transition = 'all 0.3s ease';
+          
+          if (duration > 0) {
+            setTimeout(() => {
+              element.style.backgroundColor = originalBackground;
+              element.style.border = originalBorder;
+            }, duration);
+          }
+          
+          return { success: true, action: 'element_highlighted', element: selector, color, duration };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      hide: (selector) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.style.display = 'none';
+          return { success: true, action: 'element_hidden', element: selector };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      show: (selector, display = 'block') => {
+        const element = document.querySelector(selector);
+        if (element) {
+          element.style.display = display;
+          return { success: true, action: 'element_shown', element: selector, display };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      setStyle: (selector, styles) => {
+        const element = document.querySelector(selector);
+        if (element) {
+          Object.assign(element.style, styles);
+          return { success: true, action: 'styles_applied', element: selector, styles };
+        }
+        return { success: false, error: 'Element not found' };
+      },
+
+      // Advanced Waiting Actions
+      waitForElement: (selector, timeout = 5000) => {
+        return new Promise((resolve) => {
+          const checkElement = () => {
+            const element = document.querySelector(selector);
+            if (element) {
+              resolve({ success: true, action: 'element_found', element: selector });
+            } else if (timeout > 0) {
+              timeout -= 100;
+              setTimeout(checkElement, 100);
+            } else {
+              resolve({ success: false, error: 'Element not found within timeout' });
+            }
+          };
+          checkElement();
+        });
+      },
+
+      waitForText: (selector, text, timeout = 5000) => {
+        return new Promise((resolve) => {
+          const checkText = () => {
+            const element = document.querySelector(selector);
+            if (element && element.textContent.includes(text)) {
+              resolve({ success: true, action: 'text_found', element: selector, text });
+            } else if (timeout > 0) {
+              timeout -= 100;
+              setTimeout(checkText, 100);
+            } else {
+              resolve({ success: false, error: 'Text not found within timeout' });
+            }
+          };
+          checkText();
+        });
+      },
+
+      waitForAttribute: (selector, attribute, value, timeout = 5000) => {
+        return new Promise((resolve) => {
+          const checkAttribute = () => {
+            const element = document.querySelector(selector);
+            if (element && element.getAttribute(attribute) === value) {
+              resolve({ success: true, action: 'attribute_matched', element: selector, attribute, value });
+            } else if (timeout > 0) {
+              timeout -= 100;
+              setTimeout(checkAttribute, 100);
+            } else {
+              resolve({ success: false, error: 'Attribute value not matched within timeout' });
+            }
+          };
+          checkAttribute();
+        });
+      },
+
+      waitForUrl: (urlPattern, timeout = 5000) => {
+        return new Promise((resolve) => {
+          const checkUrl = () => {
+            if (window.location.href.includes(urlPattern)) {
+              resolve({ success: true, action: 'url_matched', url: window.location.href, pattern: urlPattern });
+            } else if (timeout > 0) {
+              timeout -= 100;
+              setTimeout(checkUrl, 100);
+            } else {
+              resolve({ success: false, error: 'URL pattern not matched within timeout' });
+            }
+          };
+          checkUrl();
+        });
+      },
+
+      waitForCondition: (conditionFn, timeout = 5000) => {
+        return new Promise((resolve) => {
+          const checkCondition = () => {
+            try {
+              if (conditionFn()) {
+                resolve({ success: true, action: 'condition_met' });
+              } else if (timeout > 0) {
+                timeout -= 100;
+                setTimeout(checkCondition, 100);
+              } else {
+                resolve({ success: false, error: 'Condition not met within timeout' });
+              }
+            } catch (error) {
+              resolve({ success: false, error: 'Condition function error: ' + error.message });
+            }
+          };
+          checkCondition();
+        });
+      }
+    };
+
+    if (automation[action]) {
+      return automation[action](...Object.values(params || {}));
+    } else {
+      return { success: false, error: `Unknown action: ${action}` };
+    }
+}
+
+// Initialize MCP components with error handling (now optional)
 let mcpRequestHandler;
 let mcpValidator;
+let mcpLogger;
 let mcpInitialized = false;
 
+// MCP Error codes
+const MCP_ERROR_CODES = {
+    AUTHENTICATION_FAILED: 'AUTH_FAILED',
+    VALIDATION_FAILED: 'VALIDATION_FAILED',
+    PROVIDER_ERROR: 'PROVIDER_ERROR',
+    NETWORK_ERROR: 'NETWORK_ERROR',
+    UNKNOWN_ERROR: 'UNKNOWN_ERROR'
+};
+
 try {
-  mcpRequestHandler = new MCPRequestHandler();
-  mcpValidator = new MCPValidator();
+  // MCP components are optional - create mock implementations
+  mcpRequestHandler = {
+    generateRequestId: () => Date.now(),
+    createRequest: (method, params, id) => ({ jsonrpc: "2.0", id: id || Date.now(), method, params }),
+    createResponse: (id, result, error) => ({ jsonrpc: "2.0", id, result, error }),
+    createNotification: (method, params) => ({ jsonrpc: "2.0", method, params })
+  };
+  mcpValidator = {
+    validateChatRequest: () => true,
+    validateAuthenticationData: () => true
+  };
+  mcpLogger = {
+    debug: (message, data) => console.log('[MCP-DEBUG]', message, data),
+    info: (message, data) => console.log('[MCP-INFO]', message, data),
+    warn: (message, data) => console.warn('[MCP-WARN]', message, data),
+    error: (message, data) => console.error('[MCP-ERROR]', message, data)
+  };
+  
+  // MCP Error codes and helper functions
+  const MCP_ERROR_CODES = {
+    INTERNAL_ERROR: -32603,
+    INVALID_REQUEST: -32600,
+    METHOD_NOT_FOUND: -32601,
+    INVALID_PARAMS: -32602
+  };
+  
+  // Mock MCP configuration function
+  function getMCPProviderConfig(provider) {
+    return {
+      endpoint: `https://api.${provider}.com`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30000
+    };
+  }
+  
+  // Mock MCP error creation function
+  function createMCPError(code, message, data = null) {
+    return {
+      code,
+      message,
+      data
+    };
+  }
+  
   mcpInitialized = true;
-  console.log('[MCP] Components initialized successfully');
+  console.log('[MCP] Mock components initialized successfully');
 } catch (error) {
   console.error('[MCP] Failed to initialize components:', error);
   // Fallback to basic functionality
@@ -38,7 +1133,7 @@ chrome.runtime.onInstalled.addListener(() => {
         apiKey: '',
         model: 'gpt-4o-mini',
         temperature: 0.7,
-        maxTokens: 2048
+        maxTokens: 800
       };
       
       chrome.storage.sync.set({ aiSettings: defaultSettings });
@@ -158,6 +1253,1044 @@ class ChatLogger {
 // Initialize global chat logger
 const chatLogger = new ChatLogger();
 
+// Browser Automation System
+class BrowserAutomation {
+  constructor() {
+    this.commands = {
+      click: this.handleClick.bind(this),
+      type: this.handleType.bind(this),
+      fill: this.handleFill.bind(this),
+      scroll: this.handleScroll.bind(this),
+      navigate: this.handleNavigate.bind(this),
+      refresh: this.handleRefresh.bind(this),
+      newTab: this.handleNewTab.bind(this),
+      screenshot: this.handleScreenshot.bind(this),
+      extract: this.handleExtract.bind(this),
+      highlight: this.handleHighlight.bind(this),
+      organize: this.handleOrganize.bind(this),
+      note: this.handleNote.bind(this),
+      wait: this.handleWait.bind(this)
+    };
+    
+    this.domAnalyzer = new DOMAnalyzer();
+    this.commandParser = new AICommandParser();
+    this.aiPlanner = new AICommandPlanner();
+  }
+
+  async executeCommand(command, tabId) {
+    try {
+      console.log('📊 BrowserAutomation: executeCommand called with:', { command, tabId });
+      
+      // First try simple parsing
+      let parsedCommand;
+      try {
+        console.log('📊 BrowserAutomation: Attempting simple parsing...');
+        parsedCommand = await this.commandParser.parse(command);
+        console.log('📊 BrowserAutomation: Simple parsing successful:', parsedCommand);
+      } catch (error) {
+        // If simple parsing fails, use AI planner
+        console.log('📊 BrowserAutomation: Simple parsing failed, using AI planner for:', command);
+        return await this.executeAIPlan(command, tabId);
+      }
+
+      const handler = this.commands[parsedCommand.action];
+      
+      if (!handler) {
+        // If no handler found, try AI planning
+        console.log('📊 BrowserAutomation: No handler found for action:', parsedCommand.action, 'using AI planner');
+        return await this.executeAIPlan(command, tabId);
+      }
+      
+      console.log('📊 BrowserAutomation: Executing handler for action:', parsedCommand.action);
+      return await handler(parsedCommand, tabId);
+    } catch (error) {
+      console.error('📊 BrowserAutomation: Automation command failed:', error);
+      // Last resort: try AI planning
+      try {
+        console.log('📊 BrowserAutomation: Falling back to AI planning due to error');
+        return await this.executeAIPlan(command, tabId);
+      } catch (aiError) {
+        console.error('📊 BrowserAutomation: AI planning also failed:', aiError);
+        throw error;
+      }
+    }
+  }
+
+  async executeAIPlan(command, tabId) {
+    try {
+      // Get page context for better planning
+      const pageContext = await this.getPageContext(tabId);
+      
+      // Create AI plan
+      const plan = await this.aiPlanner.createPlan(command, pageContext);
+      
+      if (!plan.understood || !plan.plan.length) {
+        throw new Error(`AI could not understand command: ${command}`);
+      }
+
+      console.log('ðŸ¤– AI Plan created:', plan);
+
+      // Execute plan steps
+      const results = [];
+      for (const step of plan.plan) {
+        try {
+          console.log(`ðŸ”„ Executing step: ${step.description}`);
+          
+          if (step.action === 'wait') {
+            await this.handleWait(step, tabId);
+            results.push({ success: true, step: step.description });
+            continue;
+          }
+
+          const handler = this.commands[step.action];
+          if (!handler) {
+            throw new Error(`Unknown action in plan: ${step.action}`);
+          }
+
+          const result = await handler(step, tabId);
+          results.push({ success: true, step: step.description, result });
+          
+          // Small delay between steps
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+        } catch (stepError) {
+          console.error(`Step failed: ${step.description}`, stepError);
+          results.push({ success: false, step: step.description, error: stepError.message });
+          
+          // Continue with remaining steps unless it's a critical failure
+          if (step.action === 'navigate' || step.action === 'newTab') {
+            break; // Stop if navigation fails
+          }
+        }
+      }
+
+      return {
+        success: true,
+        type: 'ai-plan',
+        plan: plan,
+        results: results,
+        message: `AI executed plan: ${plan.reasoning}`
+      };
+
+    } catch (error) {
+      console.error('AI plan execution failed:', error);
+      throw error;
+    }
+  }
+
+  async getPageContext(tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const elements = await this.injectAndExecute(tabId, 'extractPageElements');
+      
+      return {
+        url: tab.url,
+        title: tab.title,
+        elements: elements || []
+      };
+    } catch (error) {
+      console.warn('Could not get page context:', error);
+      return null;
+    }
+  }
+
+  async handleClick(command, tabId) {
+    const selector = await this.domAnalyzer.findElement(command.target, tabId);
+    return await this.injectAndExecute(tabId, 'click', { selector });
+  }
+
+  async handleType(command, tabId) {
+    const selector = await this.domAnalyzer.findElement(command.target, tabId);
+    return await this.injectAndExecute(tabId, 'type', { 
+      selector, 
+      text: command.text 
+    });
+  }
+
+  async handleFill(command, tabId) {
+    const formData = await this.domAnalyzer.analyzeForm(command.target, tabId);
+    return await this.injectAndExecute(tabId, 'fillForm', { 
+      formData, 
+      values: command.values 
+    });
+  }
+
+  async handleScroll(command, tabId) {
+    return await this.injectAndExecute(tabId, 'scroll', { 
+      direction: command.direction,
+      amount: command.amount 
+    });
+  }
+
+  async handleNavigate(command, tabId) {
+    return await chrome.tabs.update(tabId, { url: command.url });
+  }
+
+  async handleRefresh(command, tabId) {
+    await chrome.tabs.reload(tabId);
+    return { 
+      success: true, 
+      action: 'refresh', 
+      message: 'Page refreshed successfully'
+    };
+  }
+
+  async handleNewTab(command, tabId) {
+    const newTab = await chrome.tabs.create({ url: command.url });
+    return { 
+      success: true, 
+      action: 'newTab', 
+      url: command.url, 
+      tabId: newTab.id,
+      message: `Opened new tab with ${command.url}`
+    };
+  }
+
+  async handleScreenshot(command, tabId) {
+    const screenshot = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+    return { screenshot, timestamp: Date.now() };
+  }
+
+  async handleExtract(command, tabId) {
+    return await this.injectAndExecute(tabId, 'extractData', { 
+      selector: command.selector,
+      type: command.type 
+    });
+  }
+
+  async handleHighlight(command, tabId) {
+    return await this.injectAndExecute(tabId, 'highlight', { 
+      content: command.content 
+    });
+  }
+
+  async handleOrganize(command, tabId) {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    return await this.organizeTabs(tabs, command.criteria);
+  }
+
+  async handleNote(command, tabId) {
+    const pageContent = await this.injectAndExecute(tabId, 'extractPageContent');
+    return await this.generateNote(pageContent, command.focus);
+  }
+
+  async handleWait(command, tabId) {
+    if (command.time) {
+      // Wait for specific time
+      await new Promise(resolve => setTimeout(resolve, command.time));
+      return { success: true, action: 'waited', time: command.time };
+    } else if (command.target) {
+      // Wait for element to appear
+      const maxWait = 10000; // 10 seconds max
+      const startTime = Date.now();
+      
+      while (Date.now() - startTime < maxWait) {
+        try {
+          await this.domAnalyzer.findElement(command.target, tabId);
+          return { success: true, action: 'waited', target: command.target };
+        } catch {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      throw new Error(`Element not found after waiting: ${command.target}`);
+    }
+    
+    return { success: true, action: 'waited' };
+  }
+
+  async injectAndExecute(tabId, action, params = {}) {
+    try {
+      // Ensure params is serializable (plain object or null)
+      const serializableParams = params ? JSON.parse(JSON.stringify(params)) : {};
+      
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: automationContentScript,
+        args: [action, serializableParams]
+      });
+      return results[0]?.result;
+    } catch (error) {
+      console.error('Script injection failed:', error);
+      throw error;
+    }
+  }
+}
+
+// Tab and content management
+class TabOrganizer {
+  async organizeTabs(tabs, criteria) {
+    const groups = {};
+    
+    for (const tab of tabs) {
+      let groupKey = 'other';
+      
+      switch (criteria) {
+        case 'domain':
+          groupKey = new URL(tab.url).hostname;
+          break;
+        case 'title':
+          groupKey = tab.title.split(' ')[0];
+          break;
+        case 'type':
+          if (tab.url.includes('github')) groupKey = 'development';
+          else if (tab.url.includes('mail') || tab.url.includes('gmail')) groupKey = 'email';
+          else if (tab.url.includes('docs') || tab.url.includes('notion')) groupKey = 'documents';
+          else if (tab.url.includes('youtube') || tab.url.includes('netflix')) groupKey = 'media';
+          break;
+      }
+      
+      if (!groups[groupKey]) groups[groupKey] = [];
+      groups[groupKey].push(tab);
+    }
+    
+    // Create tab groups
+    for (const [groupName, tabsInGroup] of Object.entries(groups)) {
+      if (tabsInGroup.length > 1) {
+        const tabIds = tabsInGroup.map(tab => tab.id);
+        const groupId = await chrome.tabs.group({ tabIds });
+        await chrome.tabGroups.update(groupId, { title: groupName });
+      }
+    }
+    
+    return { success: true, groups: Object.keys(groups), totalTabs: tabs.length };
+  }
+
+  async generateNote(pageContent, focus) {
+    // Use AI to generate smart notes
+    const prompt = `
+    Create concise, actionable notes from this webpage content:
+    
+    Title: ${pageContent.title}
+    URL: ${pageContent.url}
+    
+    Main headings: ${pageContent.headings.join(', ')}
+    
+    Key content: ${pageContent.paragraphs.slice(0, 3).join(' ')}
+    
+    Focus on: ${focus || 'main points and actionable items'}
+    
+    Format as bullet points with key insights and action items.
+    `;
+    
+    try {
+      const settings = await getStoredSettings();
+      const aiResponse = await this.callAI(prompt, settings);
+      
+      const note = {
+        title: pageContent.title,
+        url: pageContent.url,
+        content: aiResponse,
+        timestamp: new Date().toISOString(),
+        tags: this.extractTags(pageContent)
+      };
+      
+      // Save note to storage
+      await this.saveNote(note);
+      
+      return { success: true, note };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async callAI(prompt, settings) {
+    const response = await fetch(settings.host, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.apiKey}`
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500
+      })
+    });
+    
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+
+  extractTags(pageContent) {
+    const tags = [];
+    const url = pageContent.url.toLowerCase();
+    
+    if (url.includes('github')) tags.push('development', 'code');
+    if (url.includes('docs')) tags.push('documentation');
+    if (url.includes('news')) tags.push('news');
+    if (url.includes('blog')) tags.push('blog');
+    if (pageContent.headings.some(h => h.toLowerCase().includes('tutorial'))) tags.push('tutorial');
+    
+    return tags;
+  }
+
+  async saveNote(note) {
+    const result = await chrome.storage.local.get('automationNotes');
+    const notes = result.automationNotes || [];
+    notes.unshift(note);
+    
+    // Keep only last 100 notes
+    if (notes.length > 100) {
+      notes.splice(100);
+    }
+    
+    await chrome.storage.local.set({ automationNotes: notes });
+  }
+}
+
+// DOM Analysis System
+class DOMAnalyzer {
+  async findElement(description, tabId) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: this.domAnalysisScript,
+        args: [description]
+      });
+      return results[0]?.result;
+    } catch (error) {
+      console.error('DOM analysis failed:', error);
+      throw error;
+    }
+  }
+
+  async analyzeForm(formDescription, tabId) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: this.formAnalysisScript,
+        args: [formDescription]
+      });
+      return results[0]?.result;
+    } catch (error) {
+      console.error('Form analysis failed:', error);
+      throw error;
+    }
+  }
+
+  domAnalysisScript(description) {
+    // Helper functions - must be defined inside the injected function
+    function scoreElement(element, description) {
+      let score = 0;
+      const desc = description.toLowerCase();
+      const text = (element.textContent || '').toLowerCase();
+      const placeholder = (element.placeholder || '').toLowerCase();
+      const id = (element.id || '').toLowerCase();
+      const className = (element.className || '').toLowerCase();
+      
+      // Text content matching
+      if (text.includes(desc)) score += 10;
+      if (placeholder.includes(desc)) score += 8;
+      if (id.includes(desc)) score += 6;
+      if (className.includes(desc)) score += 4;
+      
+      // Element type matching
+      if (desc.includes('button') && element.tagName === 'BUTTON') score += 5;
+      if (desc.includes('input') && element.tagName === 'INPUT') score += 5;
+      if (desc.includes('link') && element.tagName === 'A') score += 5;
+      if (desc.includes('form') && element.tagName === 'FORM') score += 5;
+      
+      // Clickable elements
+      if (element.onclick || element.addEventListener) score += 2;
+      if (element.style.cursor === 'pointer') score += 2;
+      
+      return score;
+    }
+
+    function generateSelector(element) {
+      if (element.id) {
+        return `#${element.id}`;
+      }
+      
+      if (element.className) {
+        const classes = element.className.split(' ').filter(c => c.trim());
+        if (classes.length > 0) {
+          return `.${classes[0]}`;
+        }
+      }
+      
+      const tagName = element.tagName.toLowerCase();
+      const parent = element.parentElement;
+      
+      if (parent) {
+        const siblings = Array.from(parent.children);
+        const index = siblings.indexOf(element);
+        return `${tagName}:nth-child(${index + 1})`;
+      }
+      
+      return tagName;
+    }
+
+    // Main logic
+    const elements = document.querySelectorAll('*');
+    const candidates = [];
+    
+    for (const element of elements) {
+      const score = scoreElement(element, description);
+      if (score > 0) {
+        candidates.push({
+          element,
+          selector: generateSelector(element),
+          score,
+          text: element.textContent?.trim().substring(0, 100),
+          tag: element.tagName.toLowerCase(),
+          type: element.type,
+          id: element.id,
+          className: element.className
+        });
+      }
+    }
+    
+    candidates.sort((a, b) => b.score - a.score);
+    
+    console.log('DOMAnalyzer found', candidates.length, 'candidates for:', description);
+    if (candidates.length > 0) {
+      console.log('Best candidate:', candidates[0]);
+      return candidates[0].selector;
+    }
+    
+    console.log('No candidates found for:', description);
+    return null;
+  }
+
+  formAnalysisScript(formDescription) {
+    const forms = document.querySelectorAll('form, .form, [role="form"]');
+    let targetForm = null;
+    
+    // Find the most relevant form
+    for (const form of forms) {
+      const formText = form.textContent.toLowerCase();
+      if (formText.includes(formDescription.toLowerCase())) {
+        targetForm = form;
+        break;
+      }
+    }
+    
+    if (!targetForm && forms.length > 0) {
+      targetForm = forms[0]; // Fallback to first form
+    }
+    
+    if (!targetForm) {
+      return { error: 'No form found' };
+    }
+    
+    const fields = {};
+    const inputs = targetForm.querySelectorAll('input, textarea, select');
+    
+    for (const input of inputs) {
+      let fieldName = input.name || input.id || input.placeholder || input.type;
+      if (!fieldName) {
+        const label = targetForm.querySelector(`label[for="${input.id}"]`);
+        if (label) fieldName = label.textContent.trim();
+      }
+      
+      if (fieldName) {
+        fields[fieldName.toLowerCase()] = this.generateSelector(input);
+      }
+    }
+    
+    return {
+      selector: this.generateSelector(targetForm),
+      fields,
+      action: targetForm.action,
+      method: targetForm.method
+    };
+  }
+}
+
+// AI Command Parser
+class AICommandParser {
+  constructor() {
+    this.patterns = {
+      // Basic actions
+      click: /(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      type: /(?:type|enter|input)\s+["']([^"']+)["']\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i,
+      fill: /(?:fill|complete)\s+(?:the\s+)?(.+?)(?:\s+with\s+(.+))?/i,
+      
+      // Mouse events
+      hover: /(?:hover|mouse\s+over)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      rightClick: /(?:right\s+click|context\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      doubleClick: /(?:double\s+click|dbl\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      mouseDown: /mouse\s+down\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      mouseUp: /mouse\s+up\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      
+      // Scrolling
+      scroll: /scroll\s+(up|down|left|right)(?:\s+(\d+))?/i,
+      scrollToElement: /scroll\s+to\s+(?:the\s+)?(.+)/i,
+      
+      // Keyboard events
+      keyDown: /(?:key\s+down|press\s+key)\s+(.+?)(?:\s+on\s+(.+))?/i,
+      keyUp: /(?:key\s+up|release\s+key)\s+(.+?)(?:\s+on\s+(.+))?/i,
+      sendKeys: /(?:send\s+keys|press)\s+(.+?)(?:\s+to\s+(.+))?/i,
+      typeText: /(?:type\s+text|slowly\s+type)\s+["']([^"']+)["']\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i,
+      
+      // Form actions
+      focus: /focus\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      blur: /blur\s+(?:from\s+)?(?:the\s+)?(.+)/i,
+      select: /select\s+(.+?)(?:\s+in\s+(.+))?/i,
+      check: /(?:check|uncheck)\s+(?:the\s+)?(.+)/i,
+      submit: /submit\s+(?:the\s+)?(.+)/i,
+      reset: /reset\s+(?:the\s+)?(.+)/i,
+      clearInput: /(?:clear|empty)\s+(?:the\s+)?(.+)/i,
+      
+      // Drag and drop
+      dragAndDrop: /drag\s+(.+?)\s+(?:to|onto)\s+(.+)/i,
+      dragStart: /start\s+dragging\s+(.+)/i,
+      drop: /drop\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      
+      // Touch events
+      touchStart: /touch\s+start\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      touchMove: /touch\s+move\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      touchEnd: /touch\s+end\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      
+      // Page/Window actions
+      refresh: /(?:refresh|reload)(?:\s+(?:the\s+)?page|\(\))?/i,
+      goBack: /(?:go\s+back|navigate\s+back|back)/i,
+      goForward: /(?:go\s+forward|navigate\s+forward|forward)/i,
+      newTabAndNavigate: /(?:open\s+)?new\s+tab\s+and\s+(?:navigate\s+to|go\s+to)\s+(.+)/i,
+      newTab: /(?:open\s+)?(?:new\s+tab(?:\s+(?:with))?)\s+(.+)/i,
+      navigate: /(?:go to|navigate to|open)\s+(.+)/i,
+      
+      // Content manipulation
+      getText: /(?:get\s+text|read\s+text)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
+      setText: /(?:set\s+text|change\s+text)\s+(?:of\s+)?(?:the\s+)?(.+?)\s+to\s+["']([^"']+)["']/i,
+      getAttribute: /(?:get\s+attribute|read\s+attribute)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
+      setAttribute: /(?:set\s+attribute|change\s+attribute)\s+(.+?)\s+(?:of\s+)?(?:the\s+)?(.+?)\s+to\s+["']([^"']+)["']/i,
+      addClass: /(?:add\s+class|apply\s+class)\s+(.+?)\s+(?:to\s+)?(?:the\s+)?(.+)/i,
+      removeClass: /(?:remove\s+class|delete\s+class)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
+      toggleClass: /toggle\s+class\s+(.+?)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      
+      // Visual actions
+      highlight: /highlight\s+(?:the\s+)?(.+?)(?:\s+with\s+(.+))?/i,
+      hide: /hide\s+(?:the\s+)?(.+)/i,
+      show: /show\s+(?:the\s+)?(.+)/i,
+      setStyle: /(?:set\s+style|apply\s+style)\s+(.+?)\s+(?:to\s+)?(?:the\s+)?(.+)/i,
+      
+      // Waiting actions
+      wait: /wait\s+(\d+)(?:\s+(?:ms|milliseconds|seconds?))?/i,
+      waitForElement: /wait\s+for\s+(?:the\s+)?(.+?)(?:\s+(\d+)\s*(?:ms|seconds?))?/i,
+      waitForText: /wait\s+for\s+text\s+["']([^"']+)["']\s+(?:in\s+)?(?:the\s+)?(.+?)(?:\s+(\d+)\s*(?:ms|seconds?))?/i,
+      waitForUrl: /wait\s+for\s+url\s+(.+?)(?:\s+(\d+)\s*(?:ms|seconds?))?/i,
+      
+      // Extraction and analysis
+      screenshot: /(?:take\s+)?(?:a\s+)?screenshot/i,
+      extract: /(?:extract|get|collect)\s+(.+?)(?:\s+from\s+(.+))?/i,
+      extractPageElements: /(?:extract|get|list)\s+(?:all\s+)?(?:page\s+)?elements/i,
+      organize: /organize\s+tabs(?:\s+by\s+(.+))?/i,
+      note: /(?:take\s+)?(?:a\s+)?note(?:\s+about\s+(.+))?/i
+    };
+  }
+
+  async parse(command) {
+    const cmd = command.trim();
+    
+    for (const [action, pattern] of Object.entries(this.patterns)) {
+      const match = cmd.match(pattern);
+      if (match) {
+        return this.parseAction(action, match);
+      }
+    }
+    
+    // If no pattern matches, try AI parsing
+    return await this.aiParse(command);
+  }
+
+  parseAction(action, match) {
+    switch (action) {
+      // Basic actions
+      case 'click':
+        return { action: 'click', target: match[1] };
+      case 'type':
+        return { action: 'type', text: match[1], target: match[2] };
+      case 'fill':
+        return { action: 'fill', target: match[1], values: this.parseValues(match[2]) };
+      
+      // Mouse events
+      case 'hover':
+        return { action: 'hover', target: match[1] };
+      case 'rightClick':
+        return { action: 'rightClick', target: match[1] };
+      case 'doubleClick':
+        return { action: 'doubleClick', target: match[1] };
+      case 'mouseDown':
+        return { action: 'mouseDown', target: match[1] };
+      case 'mouseUp':
+        return { action: 'mouseUp', target: match[1] };
+      
+      // Scrolling
+      case 'scroll':
+        return { action: 'scroll', direction: match[1], amount: parseInt(match[2]) || 100 };
+      case 'scrollToElement':
+        return { action: 'scrollToElement', target: match[1] };
+      
+      // Keyboard events
+      case 'keyDown':
+        return { action: 'keyDown', key: match[1], target: match[2] || 'body' };
+      case 'keyUp':
+        return { action: 'keyUp', key: match[1], target: match[2] || 'body' };
+      case 'sendKeys':
+        return { action: 'sendKeys', keys: match[1], target: match[2] || 'body' };
+      case 'typeText':
+        return { action: 'typeText', text: match[1], target: match[2] };
+      
+      // Form actions
+      case 'focus':
+        return { action: 'focus', target: match[1] };
+      case 'blur':
+        return { action: 'blur', target: match[1] };
+      case 'select':
+        return { action: 'select', value: match[1], target: match[2] };
+      case 'check':
+        return { action: 'check', target: match[1], checked: !match[0].includes('uncheck') };
+      case 'submit':
+        return { action: 'submit', target: match[1] };
+      case 'reset':
+        return { action: 'reset', target: match[1] };
+      case 'clearInput':
+        return { action: 'clearInput', target: match[1] };
+      
+      // Drag and drop
+      case 'dragAndDrop':
+        return { action: 'dragAndDrop', source: match[1], target: match[2] };
+      case 'dragStart':
+        return { action: 'dragStart', target: match[1] };
+      case 'drop':
+        return { action: 'drop', target: match[1] };
+      
+      // Touch events
+      case 'touchStart':
+        return { action: 'touchStart', target: match[1] };
+      case 'touchMove':
+        return { action: 'touchMove', target: match[1] };
+      case 'touchEnd':
+        return { action: 'touchEnd', target: match[1] };
+      
+      // Page/Window actions
+      case 'refresh':
+        return { action: 'refresh' };
+      case 'goBack':
+        return { action: 'goBack' };
+      case 'goForward':
+        return { action: 'goForward' };
+      case 'newTabAndNavigate':
+        return { action: 'newTab', url: this.normalizeUrl(match[1]) };
+      case 'newTab':
+        return { action: 'newTab', url: this.normalizeUrl(match[1]) };
+      case 'navigate':
+        return { action: 'navigate', url: this.normalizeUrl(match[1]) };
+      
+      // Content manipulation
+      case 'getText':
+        return { action: 'getText', target: match[1] };
+      case 'setText':
+        return { action: 'setText', target: match[1], text: match[2] };
+      case 'getAttribute':
+        return { action: 'getAttribute', attribute: match[1], target: match[2] };
+      case 'setAttribute':
+        return { action: 'setAttribute', attribute: match[1], target: match[2], value: match[3] };
+      case 'addClass':
+        return { action: 'addClass', className: match[1], target: match[2] };
+      case 'removeClass':
+        return { action: 'removeClass', className: match[1], target: match[2] };
+      case 'toggleClass':
+        return { action: 'toggleClass', className: match[1], target: match[2] };
+      
+      // Visual actions
+      case 'highlight':
+        return { action: 'highlight', target: match[1], color: match[2] || 'yellow' };
+      case 'hide':
+        return { action: 'hide', target: match[1] };
+      case 'show':
+        return { action: 'show', target: match[1] };
+      case 'setStyle':
+        return { action: 'setStyle', styles: this.parseStyles(match[1]), target: match[2] };
+      
+      // Waiting actions
+      case 'wait':
+        return { action: 'wait', duration: parseInt(match[1]) * (match[0].includes('second') ? 1000 : 1) };
+      case 'waitForElement':
+        return { action: 'waitForElement', target: match[1], timeout: parseInt(match[2]) || 5000 };
+      case 'waitForText':
+        return { action: 'waitForText', text: match[1], target: match[2], timeout: parseInt(match[3]) || 5000 };
+      case 'waitForUrl':
+        return { action: 'waitForUrl', pattern: match[1], timeout: parseInt(match[2]) || 5000 };
+      
+      // Extraction and analysis
+      case 'screenshot':
+        return { action: 'screenshot' };
+      case 'extract':
+        return { action: 'extract', type: match[1], selector: match[2] };
+      case 'extractPageElements':
+        return { action: 'extractPageElements' };
+      case 'highlight':
+        return { action: 'highlight', content: match[1] };
+      case 'organize':
+        return { action: 'organize', criteria: match[1] || 'domain' };
+      case 'note':
+        return { action: 'note', focus: match[1] };
+      default:
+        throw new Error(`Unknown action: ${action}`);
+    }
+  }
+
+  parseStyles(styleString) {
+    const styles = {};
+    const pairs = styleString.split(';');
+    
+    for (const pair of pairs) {
+      const [property, value] = pair.split(':').map(s => s.trim());
+      if (property && value) {
+        // Convert CSS property to camelCase
+        const camelProperty = property.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
+        styles[camelProperty] = value;
+      }
+    }
+    
+    return styles;
+  }
+
+  parseValues(valuesString) {
+    if (!valuesString) return {};
+    
+    const values = {};
+    const pairs = valuesString.split(',');
+    
+    for (const pair of pairs) {
+      const [key, value] = pair.split(':').map(s => s.trim());
+      if (key && value) {
+        values[key.toLowerCase()] = value.replace(/^["']|["']$/g, '');
+      }
+    }
+    
+    return values;
+  }
+
+  normalizeUrl(url) {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    return `https://${url}`;
+  }
+
+  async aiParse(command) {
+    // Fallback: try to understand the command with simple keywords
+    const lowerCmd = command.toLowerCase();
+    
+    if (lowerCmd.includes('click') || lowerCmd.includes('press')) {
+      const target = command.replace(/(?:click|press)\s+(?:on\s+)?/i, '').trim();
+      return { action: 'click', target };
+    }
+    
+    if (lowerCmd.includes('type') || lowerCmd.includes('enter')) {
+      return { action: 'type', text: command, target: 'input' };
+    }
+    
+    if (lowerCmd.includes('scroll')) {
+      const direction = lowerCmd.includes('up') ? 'up' : 'down';
+      return { action: 'scroll', direction };
+    }
+    
+    throw new Error(`Could not parse command: ${command}`);
+  }
+}
+
+// AI Command Planner - uses LLM to understand complex commands and create action plans
+class AICommandPlanner {
+  constructor() {
+    this.systemPrompt = `You are an intelligent browser automation assistant. Your job is to analyze user commands and create step-by-step action plans.
+
+Available browser actions:
+- click: Click on elements (buttons, links, text)
+- type: Type text in input fields
+- fill: Fill forms with data
+- scroll: Scroll page up/down
+- navigate: Go to URLs 
+- newTab: Open new tab with URL
+- screenshot: Take page screenshot
+- extract: Extract data from page
+- wait: Wait for elements or time
+
+Your response MUST be valid JSON with this structure:
+{
+  "understood": true/false,
+  "plan": [
+    {
+      "action": "actionName",
+      "target": "element description or URL",
+      "text": "text to type (if applicable)",
+      "description": "what this step does"
+    }
+  ],
+  "reasoning": "explanation of the plan"
+}
+
+Examples:
+Command: "Ð½Ð°Ð¹Ð´Ð¸ Ð¸ ÑÐºÐ°Ñ‡Ð°Ð¹ PDF Ñ„Ð°Ð¹Ð» Ð¾ JavaScript"
+Response: {
+  "understood": true,
+  "plan": [
+    {"action": "navigate", "target": "https://google.com", "description": "Go to Google"},
+    {"action": "type", "target": "search box", "text": "JavaScript PDF filetype:pdf", "description": "Search for JavaScript PDFs"},
+    {"action": "click", "target": "search button", "description": "Start search"},
+    {"action": "click", "target": "first PDF result", "description": "Click first PDF link"}
+  ],
+  "reasoning": "To find and download a JavaScript PDF, I'll search Google with specific filetype filter and click the first result"
+}
+
+Command: "Ð·Ð°Ð¿Ð¾Ð»Ð½Ð¸ Ñ„Ð¾Ñ€Ð¼Ñƒ Ñ€ÐµÐ³Ð¸ÑÑ‚Ñ€Ð°Ñ†Ð¸Ð¸"
+Response: {
+  "understood": true,
+  "plan": [
+    {"action": "extract", "target": "form fields", "description": "Analyze form structure"},
+    {"action": "fill", "target": "registration form", "description": "Fill form with user data"}
+  ],
+  "reasoning": "I'll first analyze the form structure, then fill it with appropriate data"
+}
+
+Current page context will be provided when available.`;
+  }
+
+  async createPlan(command, pageContext = null) {
+    try {
+      console.log('🧠 AI Planner: createPlan called with command:', command);
+      console.log('🧠 AI Planner: pageContext:', pageContext);
+      
+      // Build context-aware prompt
+      let contextPrompt = this.systemPrompt;
+      
+      if (pageContext) {
+        contextPrompt += `\n\nCurrent page context:
+URL: ${pageContext.url || 'unknown'}
+Title: ${pageContext.title || 'unknown'}
+User Agent: ${navigator.userAgent}
+Available elements: ${pageContext.elements ? pageContext.elements.slice(0, 15).join(', ') : 'analyzing...'}
+
+Page analysis:
+- This appears to be a ${this.identifyPageType(pageContext.url)} page
+- Browser: ${this.getBrowserInfo()}
+- Device: ${this.getDeviceInfo()}`;
+      }
+
+      console.log('🧠 AI Planner: Built context prompt, calling LLM...');
+      
+      // Get AI response through existing MCP system
+      const response = await this.callLLM(contextPrompt, command);
+      console.log('🧠 AI Planner: LLM response received:', response);
+      
+      // Parse and validate response
+      const parsedResponse = this.parseAIResponse(response);
+      console.log('🧠 AI Planner: Parsed response:', parsedResponse);
+      
+      return parsedResponse;
+      
+    } catch (error) {
+      console.error('🧠 AI Planner: AI Command Planning failed:', error);
+      // Fallback to simple parsing
+      return {
+        understood: false,
+        plan: [{ action: 'error', description: `Failed to understand: ${command}` }],
+        reasoning: 'Could not analyze command with AI'
+      };
+    }
+  }
+
+  async callLLM(systemPrompt, userCommand) {
+    // Use existing MCP provider configuration
+    const settings = await new Promise(resolve => {
+      chrome.storage.sync.get(['provider', 'apiKey', 'host', 'model'], resolve);
+    });
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Analyze this command and create action plan: "${userCommand}"` }
+    ];
+
+    // Use existing processAIRequest function
+    const result = await processAIRequest({ messages, settings });
+    
+    // Extract content from response
+    if (result.success && result.response) {
+      const response = result.response;
+      
+      // Handle different response formats
+      if (response.choices && response.choices[0] && response.choices[0].message) {
+        return response.choices[0].message.content;
+      } else if (response.candidates && response.candidates[0] && response.candidates[0].content) {
+        return response.candidates[0].content.parts[0].text;
+      } else if (typeof response === 'string') {
+        return response;
+      }
+    }
+    
+    throw new Error(result.error || 'Failed to get AI response');
+  }
+
+  parseAIResponse(response) {
+    try {
+      // Extract JSON from response
+      let jsonStr = response;
+      
+      // Try to find JSON in response if it's wrapped in text
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+
+      const parsed = JSON.parse(jsonStr);
+      
+      // Validate structure
+      if (!parsed.plan || !Array.isArray(parsed.plan)) {
+        throw new Error('Invalid plan structure');
+      }
+
+      return parsed;
+    } catch (error) {
+      console.error('Failed to parse AI response:', error);
+      return {
+        understood: false,
+        plan: [{ action: 'error', description: 'Could not parse AI response' }],
+        reasoning: 'AI response parsing failed'
+      };
+    }
+  }
+
+  identifyPageType(url) {
+    if (!url) return 'unknown';
+    
+    if (url.includes('google.com')) return 'search engine';
+    if (url.includes('youtube.com')) return 'video platform';
+    if (url.includes('github.com')) return 'code repository';
+    if (url.includes('stackoverflow.com')) return 'programming Q&A';
+    if (url.includes('amazon.com') || url.includes('shop')) return 'e-commerce';
+    if (url.includes('docs.google.com') || url.includes('notion.so')) return 'document editor';
+    if (url.includes('mail') || url.includes('gmail')) return 'email service';
+    if (url.includes('facebook.com') || url.includes('twitter.com') || url.includes('linkedin.com')) return 'social media';
+    if (url.includes('news') || url.includes('bbc.com') || url.includes('cnn.com')) return 'news site';
+    
+    return 'website';
+  }
+
+  getBrowserInfo() {
+    const userAgent = navigator.userAgent;
+    if (userAgent.includes('Chrome')) return 'Chrome';
+    if (userAgent.includes('Firefox')) return 'Firefox';
+    if (userAgent.includes('Safari')) return 'Safari';
+    if (userAgent.includes('Edge')) return 'Edge';
+    return 'Unknown browser';
+  }
+
+  getDeviceInfo() {
+    const userAgent = navigator.userAgent;
+    if (userAgent.includes('Mobile')) return 'Mobile device';
+    if (userAgent.includes('Tablet')) return 'Tablet device';
+    return 'Desktop computer';
+  }
+}
+
+// Initialize browser automation
+const browserAutomation = new BrowserAutomation();
+
 // Handle side panel opening (fallback for older Chrome versions)
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ windowId: tab.windowId });
@@ -165,27 +2298,58 @@ chrome.action.onClicked.addListener((tab) => {
 
 // Handle messages from content scripts and side panel with MCP compliance
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('🚀 UPDATED BACKGROUND SCRIPT - VERSION 2.1.0 - FULL PAGE ANALYSIS 🚀');
+  console.log('ï¿½ðŸ”§ BACKGROUND: Message received:', request.action, request);
   try {
+    console.log('ðŸ”§ BACKGROUND: Processing action:', request.action);
+    
+    console.log('ðŸ”§ BACKGROUND: Checking MCP logging...');
+    console.log('ðŸ”§ BACKGROUND: mcpInitialized:', mcpInitialized);
+    
+    try {
+      console.log('ðŸ”§ BACKGROUND: mcpLogger type:', typeof mcpLogger);
+      console.log('ðŸ”§ BACKGROUND: mcpLogger exists:', mcpLogger !== undefined && mcpLogger !== null);
+    } catch (loggerCheckError) {
+      console.error('ðŸ”§ BACKGROUND: Error checking mcpLogger:', loggerCheckError);
+    }
+    
     // Only use MCP logging if properly initialized
     if (mcpInitialized && mcpLogger) {
-      mcpLogger.debug('Received message', { action: request.action, sender: sender.tab?.url });
+      console.log('ðŸ”§ BACKGROUND: About to call mcpLogger.debug...');
+      try {
+        mcpLogger.debug('Received message', { action: request.action, sender: sender.tab?.url });
+        console.log('ðŸ”§ BACKGROUND: mcpLogger.debug called successfully');
+      } catch (mcpLogError) {
+        console.error('ðŸ”§ BACKGROUND: Error in mcpLogger.debug:', mcpLogError);
+      }
     } else {
       console.log('[BG] Received message:', request.action);
     }
     
+    console.log('ðŸ”§ BACKGROUND: About to create MCP request...');
+    
     // Create MCP request wrapper if available
     let mcpRequest = null;
     if (mcpInitialized && mcpRequestHandler) {
-      mcpRequest = mcpRequestHandler.createRequest(request.action, request);
+      try {
+        mcpRequest = mcpRequestHandler.createRequest(request.action, request);
+        console.log('ðŸ”§ BACKGROUND: MCP request created successfully');
+      } catch (mcpError) {
+        console.error('ðŸ”§ BACKGROUND: Error creating MCP request:', mcpError);
+      }
     }
     
+    console.log('ðŸ”§ BACKGROUND: After MCP setup, checking handlers...');
+    
     if (request.action === 'sendMessage') {
+      console.log('ðŸ”§ BACKGROUND: Handling sendMessage');
       // Handle popup mini chat messages
       handlePopupMessage(request, sendResponse);
       return true;
     }
     
     if (request.action === 'sendAIMessage') {
+      console.log('ðŸ”§ BACKGROUND: Handling sendAIMessage');
       // Handle side panel chat messages with MCP validation if available
       if (mcpInitialized) {
         handleMCPAIMessage(request.data, sendResponse);
@@ -197,16 +2361,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     if (request.action === 'authenticateProvider') {
+      console.log('ðŸ”§ BACKGROUND: Handling authenticateProvider');
       authenticateProvider(request.provider, sendResponse);
       return true;
     }
     
     if (request.action === 'refreshToken') {
+      console.log('ðŸ”§ BACKGROUND: Handling refreshToken');
       refreshProviderToken(request.provider, sendResponse);
       return true;
     }
     
     if (request.action === 'getAuthToken') {
+      console.log('ðŸ”§ BACKGROUND: Handling getAuthToken');
       getStoredAuthToken(request.provider, sendResponse);
       return true;
     }
@@ -319,6 +2486,135 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true });
       }).catch(error => {
         sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    // New automation handlers
+    console.log('ðŸ”§ BACKGROUND: Reached automation handlers section');
+    console.log('ðŸ”§ BACKGROUND: Checking if action is getProviderSettings:', request.action === 'getProviderSettings');
+    if (request.action === 'getProviderSettings') {
+      console.log('ðŸ”§ Background: getProviderSettings request received');
+      getStoredSettings().then(settings => {
+        console.log('ðŸ”§ Background: retrieved settings:', settings);
+        sendResponse({ success: true, settings });
+      }).catch(error => {
+        console.error('ðŸ”§ Background: error retrieving settings:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    if (request.action === 'setProviderSettings') {
+      setStoredSettings(request.settings).then(() => {
+        sendResponse({ success: true });
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    if (request.action === 'makeApiCall') {
+      handleApiCall(request.messages, request.settings).then(result => {
+        sendResponse(result);
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    console.log('ðŸ”§ BACKGROUND: Checking getModels handler');
+    if (request.action === 'getModels') {
+      console.log('ðŸ” Background: getModels request received:', request);
+      try {
+        fetchAvailableModels({
+          provider: request.provider,
+          apiKey: request.apiKey,
+          host: request.baseUrl
+        }, (response) => {
+          console.log('ðŸ” Background: fetchAvailableModels response:', response);
+          sendResponse(response);
+        });
+      } catch (error) {
+        console.error('ðŸ” Background: Error in getModels handler:', error);
+        sendResponse({ success: false, error: error.message, models: [] });
+      }
+      return true;
+    }
+
+    if (request.action === 'automationCommand') {
+      console.log('🤖 AUTOMATION: Received automation command:', request.command);
+      
+      // Get active tab first, then execute automation
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        console.log('🤖 AUTOMATION: Found tabs:', tabs.length);
+        const activeTab = tabs[0];
+        if (!activeTab) {
+          console.log('🤖 AUTOMATION: No active tab found');
+          sendResponse({ success: false, error: 'No active tab found' });
+          return;
+        }
+        
+        console.log('🤖 AUTOMATION: Active tab:', activeTab.id, activeTab.url);
+        console.log('🤖 AUTOMATION: Calling browserAutomation.executeCommand...');
+        
+        browserAutomation.executeCommand(request.command, activeTab.id).then(result => {
+          console.log('🤖 AUTOMATION: Command executed successfully:', result);
+          sendResponse({ success: true, result });
+        }).catch(error => {
+          console.error('🤖 AUTOMATION: Command execution failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      });
+      return true; // Keep message channel open for async response
+    }
+
+    if (request.action === 'getAutomationNotes') {
+      chrome.storage.local.get('automationNotes', (result) => {
+        sendResponse({ success: true, notes: result.automationNotes || [] });
+      });
+      return true;
+    }
+
+    if (request.action === 'deleteNote') {
+      chrome.storage.local.get('automationNotes', (result) => {
+        const notes = result.automationNotes || [];
+        const updatedNotes = notes.filter((_, index) => index !== request.index);
+        chrome.storage.local.set({ automationNotes: updatedNotes }, () => {
+          sendResponse({ success: true });
+        });
+      });
+      return true;
+    }
+
+    if (request.action === 'logAutomationAction') {
+      chrome.storage.local.get('automationHistory', (result) => {
+        const history = result.automationHistory || [];
+        history.push(request.data);
+        
+        // Keep only last 100 entries
+        if (history.length > 100) {
+          history.splice(0, history.length - 100);
+        }
+        
+        chrome.storage.local.set({ automationHistory: history }, () => {
+          sendResponse({ success: true });
+        });
+      });
+      return true;
+    }
+
+    if (request.action === 'analyzeCurrentPage') {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          browserAutomation.injectAndExecute(tabs[0].id, 'extractPageContent').then(pageData => {
+            sendResponse({ success: true, pageData });
+          }).catch(error => {
+            sendResponse({ success: false, error: error.message });
+          });
+        } else {
+          sendResponse({ success: false, error: 'No active tab' });
+        }
       });
       return true;
     }
@@ -526,6 +2822,609 @@ function getProviderConfig(provider) {
   return legacyConfig;
 }
 
+// Check user credits dynamically for all providers
+async function checkUserCredits(apiKey, provider = 'openrouter') {
+  try {
+    switch (provider) {
+      case 'openrouter':
+        const orResponse = await fetch('https://openrouter.ai/api/v1/auth/key', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (orResponse.ok) {
+          const data = await orResponse.json();
+          const credits = data.data?.credit_left || 50000;
+          console.log(`💰 OpenRouter credits: ${credits}`);
+          return credits;
+        }
+        break;
+        
+      case 'openai':
+        // OpenAI doesn't have a direct credit check, estimate based on tier
+        // Most users have $5-$100+ monthly limits
+        const estimatedCredits = 50000; // Conservative estimate for pay-as-you-go
+        console.log(`💰 OpenAI estimated budget: ${estimatedCredits} tokens`);
+        return estimatedCredits;
+        
+      case 'anthropic':
+        // Claude API doesn't expose credits directly
+        // Users typically have generous limits
+        const claudeCredits = 100000; // Higher limit for Claude users
+        console.log(`💰 Anthropic estimated budget: ${claudeCredits} tokens`);
+        return claudeCredits;
+        
+      case 'groq':
+        // Groq has very generous free tier limits
+        const groqCredits = 200000; // Very high for Groq's fast inference
+        console.log(`💰 Groq estimated budget: ${groqCredits} tokens`);
+        return groqCredits;
+        
+      case 'deepseek':
+        // DeepSeek typically has good limits
+        const deepseekCredits = 100000;
+        console.log(`💰 DeepSeek estimated budget: ${deepseekCredits} tokens`);
+        return deepseekCredits;
+        
+      case 'perplexity':
+        // Perplexity has monthly limits
+        const perplexityCredits = 50000;
+        console.log(`💰 Perplexity estimated budget: ${perplexityCredits} tokens`);
+        return perplexityCredits;
+        
+      case 'azure':
+        // Azure OpenAI has subscription-based limits
+        const azureCredits = 100000;
+        console.log(`💰 Azure OpenAI estimated budget: ${azureCredits} tokens`);
+        return azureCredits;
+        
+      case 'github':
+        // GitHub Models in preview - generous limits
+        const githubCredits = 150000;
+        console.log(`💰 GitHub Models estimated budget: ${githubCredits} tokens`);
+        return githubCredits;
+        
+      case 'gemini':
+      case 'google':
+        // Google Gemini has generous free tier
+        const geminiCredits = 150000;
+        console.log(`💰 Google Gemini estimated budget: ${geminiCredits} tokens`);
+        return geminiCredits;
+        
+      case 'local':
+      case 'ollama':
+        // Local models have no credit limits
+        const localCredits = 1000000; // Unlimited essentially
+        console.log(`💰 Local model: Unlimited tokens`);
+        return localCredits;
+        
+      default:
+        // Custom or unknown providers
+        const defaultCredits = 50000;
+        console.log(`💰 ${provider} estimated budget: ${defaultCredits} tokens`);
+        return defaultCredits;
+    }
+  } catch (error) {
+    console.log(`⚠️ Could not check credits for ${provider}: ${error.message}`);
+  }
+  
+  // Provider-specific fallbacks
+  const providerDefaults = {
+    'openrouter': 5000,      // Conservative for pay-per-use
+    'openai': 50000,         // Generous for subscription
+    'anthropic': 100000,     // High limit for Claude
+    'groq': 200000,          // Very high for fast inference
+    'deepseek': 100000,      // Good limits
+    'perplexity': 50000,     // Monthly limits
+    'azure': 100000,         // Enterprise limits
+    'github': 150000,        // Preview generosity
+    'gemini': 150000,        // Google's free tier
+    'google': 150000,        // Same as Gemini
+    'local': 1000000,        // No limits
+    'ollama': 1000000,       // No limits
+  };
+  
+  return providerDefaults[provider] || 50000;
+}
+
+// Process AI request function for MCP provider
+async function processAIRequest(requestData) {
+  try {
+    const { messages, provider, model, settings } = requestData;
+    
+    // Get stored settings
+    const storedSettings = await getStoredSettings();
+    
+    // Merge settings
+    const finalSettings = {
+      ...storedSettings,
+      provider: provider || storedSettings.provider,
+      model: model || storedSettings.model,
+      ...settings
+    };
+    
+    // Check authentication method
+    const authMode = finalSettings.authMode || 'api';
+    
+    if (authMode === 'web') {
+      throw new Error('Web authentication not supported in MCP provider');
+    }
+    
+    // Check for OAuth token first
+    const authData = await chrome.storage.sync.get([
+      `${finalSettings.provider}_auth_token`, 
+      `${finalSettings.provider}_auth_method`
+    ]);
+    
+    const hasOAuthToken = authData[`${finalSettings.provider}_auth_method`] === 'oauth' && authData[`${finalSettings.provider}_auth_token`];
+    
+    if (!finalSettings.apiKey && !hasOAuthToken && finalSettings.provider !== 'local' && finalSettings.provider !== 'custom') {
+      throw new Error('API key or OAuth authentication required');
+    }
+    
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    
+    // For local provider, try different headers to bypass extension restrictions
+    if (finalSettings.provider === 'local') {
+      headers['User-Agent'] = 'ChromeAiAgent/2.0';
+      // Try adding additional headers that might help with local server compatibility
+      headers['Accept'] = 'application/json';
+      headers['Cache-Control'] = 'no-cache';
+    }
+    
+    // Set authentication headers
+    if (hasOAuthToken && finalSettings.provider !== 'local') {
+      const oauthToken = authData[`${finalSettings.provider}_auth_token`];
+      if (finalSettings.provider === 'azure') {
+        headers['api-key'] = oauthToken;
+      } else if (finalSettings.provider === 'anthropic') {
+        headers['x-api-key'] = oauthToken;
+        headers['anthropic-version'] = '2023-06-01';
+      } else if (finalSettings.provider === 'gemini') {
+        headers['x-goog-api-key'] = oauthToken;
+      } else {
+        headers['Authorization'] = `Bearer ${oauthToken}`;
+      }
+    } else if (finalSettings.apiKey && finalSettings.apiKey !== 'local-no-key-required' && finalSettings.provider !== 'local') {
+      if (finalSettings.provider === 'azure') {
+        headers['api-key'] = finalSettings.apiKey;
+      } else if (finalSettings.provider === 'anthropic') {
+        headers['x-api-key'] = finalSettings.apiKey;
+        headers['anthropic-version'] = '2023-06-01';
+      } else if (finalSettings.provider === 'gemini') {
+        headers['x-goog-api-key'] = finalSettings.apiKey;
+      } else {
+        headers['Authorization'] = `Bearer ${finalSettings.apiKey}`;
+      }
+    }
+    
+    // Dynamic Token Management System
+    function estimateTokens(text) {
+      // Improved estimation: 1 token ≈ 3.5 characters for mixed content
+      return Math.ceil(text.length / 3.5);
+    }
+    
+    function calculateOptimalTokens(messages, userCredits = 5000, provider = 'openrouter') {
+      const totalText = messages.map(m => m.content).join(' ');
+      const estimatedInputTokens = estimateTokens(totalText);
+      
+      // Analyze request complexity
+      const userMessage = messages.find(m => m.role === 'user')?.content || '';
+      const requestComplexity = analyzeRequestComplexity(userMessage);
+      
+      // Calculate available tokens (leave 20% buffer for most providers, except local)
+      const bufferPercent = (provider === 'local' || provider === 'ollama') ? 0.05 : 0.2;
+      const availableTokens = Math.floor(userCredits * (1 - bufferPercent));
+      const maxInputTokens = Math.floor(availableTokens * 0.7); // 70% for input
+      const dynamicMaxTokens = Math.floor(availableTokens * 0.3); // 30% for output
+      
+      console.log(`🧠 Dynamic Token Analysis (${provider}):
+        - User Credits: ${userCredits}
+        - Buffer (${Math.floor(bufferPercent*100)}%): ${userCredits - availableTokens}
+        - Available: ${availableTokens}
+        - Input Budget (70%): ${maxInputTokens}
+        - Output Budget (30%): ${dynamicMaxTokens}
+        - Estimated Input: ${estimatedInputTokens}
+        - Request Type: ${requestComplexity.type}
+        - Complexity Score: ${requestComplexity.score}`);
+      
+      return {
+        maxInputTokens,
+        dynamicMaxTokens: Math.min(dynamicMaxTokens, getMaxTokensForComplexity(requestComplexity, provider)),
+        needsTruncation: estimatedInputTokens > maxInputTokens,
+        complexity: requestComplexity
+      };
+    }
+    
+    function analyzeRequestComplexity(userMessage) {
+      const message = userMessage.toLowerCase();
+      let score = 1;
+      let type = 'simple';
+      
+      // Simple questions (low tokens needed)
+      if (message.match(/\b(what|who|when|where|how much|yes|no)\b/) && message.length < 50) {
+        score = 1;
+        type = 'simple_question';
+      }
+      // Code analysis (medium tokens)
+      else if (message.match(/\b(code|function|debug|fix|error|syntax)\b/)) {
+        score = 2;
+        type = 'code_analysis';
+      }
+      // Content summarization (medium-high tokens)
+      else if (message.match(/\b(summarize|summary|explain|describe|analyze)\b/)) {
+        score = 3;
+        type = 'content_analysis';
+      }
+      // Complex tasks (high tokens)
+      else if (message.match(/\b(write|create|generate|build|develop|implement)\b/)) {
+        score = 4;
+        type = 'generation_task';
+      }
+      // Very complex (maximum tokens)
+      else if (message.match(/\b(refactor|optimize|complete|comprehensive|detailed)\b/)) {
+        score = 5;
+        type = 'complex_task';
+      }
+      
+      // Adjust based on message length
+      if (message.length > 200) score += 1;
+      if (message.length > 500) score += 1;
+      
+      return { score: Math.min(score, 5), type };
+    }
+    
+    function getMaxTokensForComplexity(complexity, provider = 'openrouter') {
+      // INCREASED: Base token limits by complexity for full page analysis
+      const baseTokenLimits = {
+        simple_question: 4000,     // INCREASED from 200 for full page content analysis
+        code_analysis: 4000,       // INCREASED from 400 for full page content analysis  
+        content_analysis: 4000,    // INCREASED from 600 for full page content analysis
+        generation_task: 4000,     // INCREASED from 800 for full page content analysis
+        complex_task: 4000         // INCREASED from 1000 for full page content analysis
+      };
+      
+      // Provider-specific multipliers based on their capabilities and costs
+      const providerMultipliers = {
+        'openrouter': 1.0,      // Base (pay-per-use, need efficiency)
+        'openai': 1.5,          // Higher limits for subscription users
+        'anthropic': 2.0,       // Claude handles long contexts very well
+        'groq': 0.8,            // Fast but prefer shorter for speed
+        'deepseek': 1.2,        // Good balance
+        'perplexity': 1.0,      // Standard limits
+        'azure': 1.8,           // Enterprise, can afford more
+        'github': 2.5,          // Preview period, very generous
+        'gemini': 2.0,          // Google's generous free tier
+        'google': 2.0,          // Same as Gemini
+        'local': 5.0,           // No cost constraints
+        'ollama': 5.0,          // No cost constraints
+      };
+      
+      const baseLimit = baseTokenLimits[complexity.type] || 400;
+      const multiplier = providerMultipliers[provider] || 1.0;
+      const adjustedLimit = Math.floor(baseLimit * multiplier);
+      
+      console.log(`🎯 Token limit for ${complexity.type} on ${provider}: ${adjustedLimit} (base: ${baseLimit}, multiplier: ${multiplier})`);
+      
+      return adjustedLimit;
+    }
+    
+    function smartTruncateMessages(messages, maxInputTokens, provider = 'openrouter') {
+      const totalText = messages.map(m => m.content).join(' ');
+      const estimatedTokens = estimateTokens(totalText);
+      
+      if (estimatedTokens <= maxInputTokens) {
+        return messages;
+      }
+      
+      console.log(`🔄 Smart truncation needed for ${provider}: ${estimatedTokens} > ${maxInputTokens} tokens`);
+      
+      // Provider-specific truncation strategies
+      const truncationStrategies = {
+        'anthropic': 'preserve_context',    // Claude handles long context well
+        'gemini': 'preserve_context',       // Gemini also good with long context  
+        'google': 'preserve_context',       // Same as Gemini
+        'groq': 'aggressive',               // Optimize for speed
+        'local': 'minimal',                 // Local can handle more
+        'ollama': 'minimal',                // Local can handle more
+        'github': 'preserve_context',       // Preview, be generous
+        'azure': 'balanced',                // Enterprise balance
+        'openai': 'balanced',               // Standard optimization
+        'openrouter': 'aggressive',         // Pay-per-use, be efficient
+        'deepseek': 'balanced',             // Good balance
+        'perplexity': 'balanced'            // Research focus
+      };
+      
+      const strategy = truncationStrategies[provider] || 'balanced';
+      
+      // Priority: Keep user message, truncate system message intelligently
+      const systemMsgIndex = messages.findIndex(m => m.role === 'system');
+      const userMsgIndex = messages.findIndex(m => m.role === 'user');
+      
+      if (systemMsgIndex !== -1 && userMsgIndex !== -1) {
+        const userTokens = estimateTokens(messages[userMsgIndex].content);
+        const availableForSystem = maxInputTokens - userTokens - 100; // 100 token buffer
+        
+        const minSystemTokens = strategy === 'minimal' ? 2000 : 
+                              strategy === 'preserve_context' ? 1000 :
+                              strategy === 'aggressive' ? 300 : 500;
+        
+        if (availableForSystem > minSystemTokens) {
+          const systemMsg = messages[systemMsgIndex];
+          const maxSystemChars = Math.floor(availableForSystem * 3.5);
+          
+          if (systemMsg.content.length > maxSystemChars) {
+            const content = systemMsg.content;
+            
+            // Keep automation capabilities if present
+            const automationMatch = content.match(/(AVAILABLE AUTOMATION ACTIONS:.*?(?=\n\n|$))/s);
+            const automationSection = automationMatch ? automationMatch[1] : '';
+            
+            // Keep page title/URL if present
+            const pageInfoMatch = content.match(/(viewing a webpage titled.*?(?=\.|$))/);
+            const pageInfo = pageInfoMatch ? pageInfoMatch[1] : '';
+            
+            // Calculate content preservation based on strategy
+            const contentPreservation = {
+              'minimal': 0.9,           // Keep most content
+              'preserve_context': 0.8,  // Keep good amount
+              'balanced': 0.6,          // Standard amount
+              'aggressive': 0.4         // Minimal content
+            };
+            
+            const preserveRatio = contentPreservation[strategy] || 0.6;
+            const keepLength = Math.floor((maxSystemChars - automationSection.length - pageInfo.length - 200) * preserveRatio);
+            
+            if (keepLength > 300) {
+              const contentMatch = content.match(/=== PAGE SOURCE ===\n(.*?)\n=== END PAGE SOURCE ===/s);
+              if (contentMatch) {
+                const pageContent = contentMatch[1];
+                const truncatedContent = pageContent.substring(0, keepLength) + 
+                  `\n\n[... Content truncated using ${strategy} strategy for ${provider} ...]`;
+                
+                const newContent = `You are a helpful AI assistant with browser automation capabilities. ${pageInfo}
+
+${automationSection}
+
+=== PAGE SOURCE ===
+${truncatedContent}
+=== END PAGE SOURCE ===`;
+
+                messages[systemMsgIndex].content = newContent;
+                console.log(`📄 ${provider} (${strategy}) truncation: ${newContent.length} chars (was ${content.length})`);
+              }
+            }
+          }
+        }
+      }
+      
+      return messages;
+    }
+    
+    // Dynamic Token Management System - Get real credits
+    const userCredits = await checkUserCredits(finalSettings.apiKey, finalSettings.provider);
+    const tokenAnalysis = calculateOptimalTokens(messages, userCredits, finalSettings.provider);
+    
+    // DISABLED: Always use full page source for analysis
+    // User requested to always analyze complete page content
+    console.log('🔧 Page content truncation DISABLED - using full page source for analysis');
+    // if (tokenAnalysis.needsTruncation) {
+    //   messages = smartTruncateMessages(messages, tokenAnalysis.maxInputTokens, finalSettings.provider);
+    // }
+    
+    // Update max tokens dynamically
+    finalSettings.maxTokens = tokenAnalysis.dynamicMaxTokens;
+    
+    // Prepare request based on provider
+    let host = finalSettings.host;
+    
+    // Force correct Ollama host for local provider
+    if (finalSettings.provider === 'local') {
+        host = 'http://127.0.0.1:11434/api/chat';
+        console.log(`🔧 Background: Forced local provider host to Ollama default`);
+    }
+    
+    console.log(`🔍 Background: Using host for ${finalSettings.provider}: ${host}`);
+    let requestBody;
+    
+    if (finalSettings.provider === 'gemini') {
+      // Gemini uses a different API format
+      host = `https://generativelanguage.googleapis.com/v1beta/models/${finalSettings.model}:generateContent`;
+      
+      // For Gemini, combine system message with user messages
+      let combinedText = '';
+      
+      // Add system message first if it exists
+      const systemMessage = messages.find(msg => msg.role === 'system');
+      if (systemMessage) {
+        combinedText += systemMessage.content + '\n\n';
+      }
+      
+      // Add user messages
+      const userMessages = messages.filter(msg => msg.role === 'user');
+      combinedText += userMessages.map(msg => msg.content).join('\n');
+      
+      requestBody = {
+        contents: [{
+          parts: [{
+            text: combinedText
+          }]
+        }],
+        generationConfig: {
+          temperature: finalSettings.temperature || 0.7,
+          maxOutputTokens: finalSettings.maxTokens || 800
+        }
+      };
+    } else {
+      // Standard OpenAI-compatible format
+      // Filter messages to only include role and content (remove timestamp and other fields)
+      const cleanMessages = messages.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+      
+      // DISABLED: Local provider truncation - using full page source for analysis
+      // User requested to always analyze complete page content
+      if (finalSettings.provider === 'local') {
+        console.log('🔧 Local provider content truncation DISABLED - using full page source');
+        // cleanMessages.forEach(msg => {
+        //   if (msg.role === 'system' && msg.content.length > 1000) {
+        //     console.log('🔧 Truncating system message for local provider from', msg.content.length, 'to 1000 chars');
+        //     msg.content = msg.content.substring(0, 1000) + '\n\n[Content truncated for local provider compatibility]';
+        //   }
+        // });
+      }
+      
+      requestBody = {
+        model: finalSettings.model,
+        messages: cleanMessages,
+        temperature: finalSettings.temperature || 0.7,
+        max_tokens: finalSettings.maxTokens || 800,
+        stream: false
+      };
+    }
+    
+    // Enhanced debugging for request details
+    console.log('🔍 === FULL REQUEST DEBUG ===');
+    console.log('🔍 Provider:', finalSettings.provider);
+    console.log('🔍 Request URL:', host);
+    console.log('🔍 Request Method: POST');
+    console.log('🔍 Request Headers:', JSON.stringify(headers, null, 2));
+    console.log('🔍 Request Body:', JSON.stringify(requestBody, null, 2));
+    console.log('🔍 Request Body String Length:', JSON.stringify(requestBody).length);
+    console.log('🔍 About to make fetch call...');
+    
+    // Make API call
+    let response;
+    try {
+      const requestOptions = {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(requestBody)
+      };
+      
+      console.log('🔍 Full fetch options:', JSON.stringify(requestOptions, null, 2));
+      
+      response = await fetch(host, requestOptions);
+      
+      console.log('🔍 === FULL RESPONSE DEBUG ===');
+      console.log('🔍 Response Status:', response.status);
+      console.log('🔍 Response Status Text:', response.statusText);
+      console.log('🔍 Response OK:', response.ok);
+      console.log('🔍 Response URL:', response.url);
+      console.log('🔍 Response Type:', response.type);
+      console.log('🔍 Response Headers:', JSON.stringify(Object.fromEntries(response.headers.entries()), null, 2));
+      
+      // Get response body for both success and error cases
+      const responseText = await response.text();
+      console.log('🔍 Response Body (text):', responseText);
+      console.log('🔍 Response Body Length:', responseText.length);
+      
+      if (!response.ok) {
+        console.log('🚨 === RESPONSE ERROR DETAILS ===');
+        console.log('🚨 Status:', response.status);
+        console.log('🚨 Status Text:', response.statusText);
+        console.log('🚨 Error Response Body:', responseText);
+        console.log('🚨 Error Response Headers:', Object.fromEntries(response.headers.entries()));
+        console.log('🚨 Full Response Object Properties:', Object.getOwnPropertyNames(response));
+        console.log('🚨 Response redirected:', response.redirected);
+        console.log('🚨 Response bodyUsed:', response.bodyUsed);
+        
+        // Parse error response for better user messages
+        let errorMessage = `API Error ${response.status}`;
+        try {
+          const errorData = JSON.parse(responseText);
+          if (errorData.error && errorData.error.message) {
+            const apiError = errorData.error.message;
+            
+            // Handle specific OpenRouter data policy error
+            if (apiError.includes('No endpoints found matching your data policy') && 
+                apiError.includes('Free model publication')) {
+              errorMessage = '🔒 Data Policy Configuration Required\n\n' +
+                           'Your OpenRouter account needs data policy settings configured for free models.\n' +
+                           'Please visit: https://openrouter.ai/settings/privacy\n\n' +
+                           'Configure your data policy settings to use free models.';
+            } else {
+              errorMessage = apiError;
+            }
+          }
+        } catch (parseError) {
+          // If we can't parse error JSON, use the original response text
+          errorMessage = responseText;
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      // Parse JSON for successful response
+      let responseData;
+      try {
+        responseData = JSON.parse(responseText);
+        console.log('🔍 Parsed Response Data:', JSON.stringify(responseData, null, 2));
+      } catch (parseError) {
+        console.log('🚨 JSON Parse Error:', parseError.message);
+        console.log('🚨 Raw response text:', responseText);
+        throw new Error(`Invalid JSON response: ${parseError.message}`);
+      }
+
+      // Convert Ollama native format to OpenAI format if needed
+      let finalData = responseData;
+      if (finalSettings.provider === 'local' && host.includes('/api/chat')) {
+        console.log('🔄 Converting Ollama native response to OpenAI format');
+        finalData = {
+          id: 'ollama-' + Date.now(),
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: responseData.model || finalSettings.model,
+          choices: [{
+            index: 0,
+            message: {
+              role: responseData.message?.role || 'assistant',
+              content: responseData.message?.content || ''
+            },
+            finish_reason: responseData.done_reason || 'stop'
+          }],
+          usage: {
+            prompt_tokens: responseData.prompt_eval_count || 0,
+            completion_tokens: responseData.eval_count || 0,
+            total_tokens: (responseData.prompt_eval_count || 0) + (responseData.eval_count || 0)
+          }
+        };
+        console.log('🔄 Converted response:', JSON.stringify(finalData, null, 2));
+      }
+
+      return {
+        success: true,
+        response: finalData,
+        provider: finalSettings.provider,
+        model: finalSettings.model
+      };
+      
+    } catch (fetchError) {
+      console.log('🚨 === FETCH ERROR DETAILS ===');
+      console.log('🚨 Error type:', fetchError.constructor.name);
+      console.log('🚨 Error message:', fetchError.message);
+      console.log('🚨 Error stack:', fetchError.stack);
+      console.log('🚨 Error name:', fetchError.name);
+      console.log('🚨 Error cause:', fetchError.cause);
+      console.log('🚨 Full error object:', fetchError);
+      throw fetchError;
+    }  } catch (error) {
+    console.error('Process AI request error:', error);
+    return {
+      success: false,
+      error: error.message,
+      provider: requestData.provider,
+      model: requestData.model
+    };
+  }
+}
+
 function getMCPProviderConfiguration(provider) {
   const config = getMCPProviderConfig(provider);
   if (!config) {
@@ -533,19 +3432,48 @@ function getMCPProviderConfiguration(provider) {
     return null;
   }
   
-  mcpLogger.debug('Retrieved MCP provider config', { provider, config: config.name });
-  return config;
+  // Create a complete MCP provider object with chat functionality
+  const mcpProvider = {
+    name: provider,
+    config: config,
+    chat: async function(messages, model, settings) {
+      try {
+        mcpLogger.debug('MCP provider chat called', { provider, model, messagesCount: messages.length });
+        
+        // Use the existing handleAIMessage function to process the request
+        const aiRequest = {
+          action: 'sendAIMessage',
+          data: {
+            messages: messages,
+            provider: provider,
+            model: model,
+            settings: settings
+          }
+        };
+        
+        // Call the AI processing function directly
+        return await processAIRequest(aiRequest.data);
+        
+      } catch (error) {
+        mcpLogger.error('MCP provider chat error', { provider, error: error.message });
+        throw error;
+      }
+    }
+  };
+  
+  mcpLogger.debug('Retrieved MCP provider config', { provider, configName: provider });
+  return mcpProvider;
 }
 
 async function handlePopupMessage(request, sendResponse) {
   const startTime = Date.now();
   
   // Console logging for chat interaction
-  console.log('🚀 === POPUP CHAT REQUEST ===');
-  console.log('📝 Prompt:', request.message);
-  console.log('🔧 Provider:', request.provider);
-  console.log('🤖 Model:', request.model);
-  console.log('⏰ Timestamp:', new Date().toISOString());
+  console.log('ðŸš€ === POPUP CHAT REQUEST ===');
+  console.log('ðŸ“ Prompt:', request.message);
+  console.log('ðŸ”§ Provider:', request.provider);
+  console.log('ðŸ¤– Model:', request.model);
+  console.log('â° Timestamp:', new Date().toISOString());
   
   let logData = {
     provider: null,
@@ -715,9 +3643,9 @@ async function handlePopupMessage(request, sendResponse) {
     };
     
     // Console log the request payload
-    console.log('📤 Request URL:', host);
-    console.log('📤 Request Headers:', headers);
-    console.log('📤 Request Body:', JSON.stringify(requestBody, null, 2));
+    console.log('ðŸ“¤ Request URL:', host);
+    console.log('ðŸ“¤ Request Headers:', headers);
+    console.log('ðŸ“¤ Request Body:', JSON.stringify(requestBody, null, 2));
     
     const response = await fetch(host, {
       method: 'POST',
@@ -742,7 +3670,7 @@ async function handlePopupMessage(request, sendResponse) {
     }
     
     const data = await response.json();
-    console.log('📥 Raw API Response:', JSON.stringify(data, null, 2));
+    console.log('ðŸ“¥ Raw API Response:', JSON.stringify(data, null, 2));
     
     let aiResponse;
     
@@ -760,9 +3688,9 @@ async function handlePopupMessage(request, sendResponse) {
     const responseTime = Date.now() - startTime;
     
     // Console log the processed response
-    console.log('💬 AI Response:', aiResponse);
-    console.log('⏱️ Response Time:', responseTime + 'ms');
-    console.log('✅ === POPUP CHAT COMPLETE ===\n');
+    console.log('ðŸ’¬ AI Response:', aiResponse);
+    console.log('â±ï¸ Response Time:', responseTime + 'ms');
+    console.log('âœ… === POPUP CHAT COMPLETE ===\n');
     
     // Log successful interaction
     logData.response = aiResponse;
@@ -776,13 +3704,13 @@ async function handlePopupMessage(request, sendResponse) {
     });
     
   } catch (error) {
-    console.error('❌ === POPUP CHAT ERROR ===');
-    console.error('💥 Error:', error.message);
-    console.error('🔍 Full Error:', error);
+    console.error('âŒ === POPUP CHAT ERROR ===');
+    console.error('ðŸ’¥ Error:', error.message);
+    console.error('ðŸ” Full Error:', error);
     
     const responseTime = Date.now() - startTime;
-    console.log('⏱️ Error Response Time:', responseTime + 'ms');
-    console.log('❌ === POPUP CHAT ERROR END ===\n');
+    console.log('â±ï¸ Error Response Time:', responseTime + 'ms');
+    console.log('âŒ === POPUP CHAT ERROR END ===\n');
     
     // Log error
     logData.responseTime = responseTime;
@@ -802,12 +3730,12 @@ async function handleMCPAIMessage(messageData, sendResponse) {
   const startTime = Date.now();
   
   // Console logging for MCP chat interaction
-  console.log('🔧 === MCP CHAT REQUEST ===');
-  console.log('🆔 Request ID:', requestId);
-  console.log('📝 Messages:', messageData.messages);
-  console.log('🔧 Provider:', messageData.provider);
-  console.log('🤖 Model:', messageData.model);
-  console.log('⏰ Timestamp:', new Date().toISOString());
+  console.log('ðŸ”§ === MCP CHAT REQUEST ===');
+  console.log('ðŸ†” Request ID:', requestId);
+  console.log('ðŸ“ Messages:', messageData.messages);
+  console.log('ðŸ”§ Provider:', messageData.provider);
+  console.log('ðŸ¤– Model:', messageData.model);
+  console.log('â° Timestamp:', new Date().toISOString());
   
   let logData = {
     provider: null,
@@ -836,7 +3764,7 @@ async function handleMCPAIMessage(messageData, sendResponse) {
     const mcpConfig = getMCPProviderConfiguration(provider);
     if (!mcpConfig) {
       const error = createMCPError(
-        MCP_ERROR_CODES.INVALID_PARAMS, 
+        MCP_ERROR_CODES.VALIDATION_FAILED, 
         `Unsupported provider: ${provider}`
       );
       sendResponse(mcpRequestHandler.createResponse(requestId, null, error));
@@ -846,7 +3774,7 @@ async function handleMCPAIMessage(messageData, sendResponse) {
     // Validate authentication
     try {
       const authData = await getAuthenticationData(provider, settings);
-      MCPValidator.validateAuthenticationData(authData, provider);
+      mcpValidator.validateAuthenticationData(authData, provider);
     } catch (authError) {
       mcpLogger.error('Authentication validation failed', { provider, error: authError.message });
       sendResponse(mcpRequestHandler.createResponse(requestId, null, authError));
@@ -872,184 +3800,87 @@ async function handleMCPAIMessage(messageData, sendResponse) {
     
     // Validate input with MCP validator
     try {
-      MCPValidator.validateChatRequest(chatRequest, mcpConfig);
+      mcpValidator.validateChatRequest(chatRequest, mcpConfig);
     } catch (validationError) {
       mcpLogger.error('Input validation failed', { provider, error: validationError.message });
       sendResponse(mcpRequestHandler.createResponse(requestId, null, validationError));
       return;
     }
     
-    // Get authentication headers
-    const headers = await buildAuthenticationHeaders(provider, settings);
-    
-    // Format request body based on provider message format
-    let requestBody;
-    let endpoint = mcpConfig.endpoints.chat;
-    
-    if (mcpConfig.messageFormat === 'anthropic') {
-      // Anthropic uses a different message format
-      requestBody = {
-        model: chatRequest.model,
-        max_tokens: chatRequest.max_tokens,
-        messages: chatRequest.messages.filter(msg => msg.role !== 'system'),
-        system: chatRequest.messages.find(msg => msg.role === 'system')?.content || ''
-      };
-    } else if (mcpConfig.messageFormat === 'gemini') {
-      // Gemini uses a different API format
-      endpoint = endpoint.replace('{model}', chatRequest.model);
+    // Call MCP provider chat method
+    try {
+      const chatResult = await mcpConfig.chat(
+        messageData.messages,
+        messageData.model || settings.model,
+        settings
+      );
       
-      // Combine system message with user messages for Gemini
-      const systemMessage = chatRequest.messages.find(msg => msg.role === 'system');
-      const userMessages = chatRequest.messages.filter(msg => msg.role === 'user');
-      
-      let combinedText = '';
-      if (systemMessage) {
-        combinedText = systemMessage.content + '\n\n';
+      if (chatResult.success) {
+        // Log successful chat interaction
+        logData.success = true;
+        logData.response = chatResult.response;
+        logData.responseTime = Date.now() - startTime;
+        await chatLogger.logChatInteraction(logData);
+        
+        // Send successful response
+        sendResponse(mcpRequestHandler.createResponse(requestId, chatResult.response));
+        
+        console.log('âœ… === MCP CHAT SUCCESS ===');
+        console.log('ðŸ”„ Response Time:', logData.responseTime + 'ms');
+        console.log('âœ… === MCP CHAT SUCCESS END ===');
+        
+      } else {
+        throw new Error(chatResult.error || 'Unknown chat error');
       }
-      combinedText += userMessages.map(msg => msg.content).join('\n');
       
-      requestBody = {
-        contents: [{
-          parts: [{
-            text: combinedText
-          }]
-        }],
-        generationConfig: {
-          temperature: chatRequest.temperature,
-          maxOutputTokens: chatRequest.max_tokens
-        }
-      };
-    } else {
-      // Standard OpenAI-compatible format
-      requestBody = chatRequest;
-    }
-    
-    // Console log the MCP request payload
-    console.log('📤 MCP Request Endpoint:', endpoint);
-    console.log('📤 MCP Request Headers:', headers);
-    console.log('📤 MCP Request Body:', JSON.stringify(requestBody, null, 2));
-    
-    // Handle custom endpoints
-    if (endpoint.includes('{host}')) {
-      endpoint = endpoint.replace('{host}', settings.host || mcpConfig.endpoints.chat);
-    }
-    
-    mcpLogger.debug('Making API request', { 
-      provider, 
-      endpoint, 
-      model: chatRequest.model,
-      messageCount: chatRequest.messages.length 
-    });
-    
-    // Update log data with request payload
-    logData.requestPayload = {
-      endpoint,
-      method: 'POST',
-      headers: { ...headers },
-      body: requestBody
-    };
-    
-    // Make the API request
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(requestBody)
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      const responseTime = Date.now() - startTime;
+    } catch (chatError) {
+      console.log('âŒ === MCP CHAT ERROR ===');
+      console.log('ðŸ’¥ MCP Error:', chatError.message);
+      console.log('ðŸ” MCP Full Error:', chatError);
       
       // Log error
-      logData.responseTime = responseTime;
-      logData.error = `API request failed: ${response.status} ${response.statusText}`;
+      logData.error = chatError.message;
+      logData.responseTime = Date.now() - startTime;
       await chatLogger.logChatInteraction(logData);
       
-      const error = createMCPError(
+      console.log('â±ï¸ MCP Error Response Time:', logData.responseTime + 'ms');
+      console.log('âŒ === MCP CHAT ERROR END ===');
+      
+      mcpLogger.error('Error in MCP AI message handler', {
+        requestId,
+        error: chatError.message,
+        stack: chatError.stack
+      });
+      
+      const mcpError = createMCPError(
         MCP_ERROR_CODES.PROVIDER_ERROR,
-        `API request failed: ${response.status} ${response.statusText}`,
-        { status: response.status, message: errorText }
+        chatError.message
       );
-      mcpLogger.error('API request failed', { provider, status: response.status, error: errorText });
-      sendResponse(mcpRequestHandler.createResponse(requestId, null, error));
-      return;
+      sendResponse(mcpRequestHandler.createResponse(requestId, null, mcpError));
     }
-    
-    const responseData = await response.json();
-    console.log('📥 MCP Raw API Response:', JSON.stringify(responseData, null, 2));
-    
-    // Format response based on provider
-    let formattedResponse;
-    if (mcpConfig.messageFormat === 'anthropic') {
-      formattedResponse = {
-        choices: [{
-          message: {
-            role: 'assistant',
-            content: responseData.content[0]?.text || ''
-          }
-        }]
-      };
-    } else if (mcpConfig.messageFormat === 'gemini') {
-      formattedResponse = {
-        choices: [{
-          message: {
-            role: 'assistant',
-            content: responseData.candidates[0]?.content?.parts[0]?.text || ''
-          }
-        }]
-      };
-    } else {
-      // Standard OpenAI format
-      formattedResponse = responseData;
-    }
-    
-    const responseTime = Date.now() - startTime;
-    
-    // Console log the processed MCP response
-    console.log('💬 MCP AI Response:', formattedResponse.choices?.[0]?.message?.content);
-    console.log('⏱️ MCP Response Time:', responseTime + 'ms');
-    console.log('✅ === MCP CHAT COMPLETE ===\n');
-    
-    // Log successful interaction
-    logData.response = formattedResponse.choices?.[0]?.message?.content || 'No response content';
-    logData.responseTime = responseTime;
-    logData.success = true;
-    await chatLogger.logChatInteraction(logData);
-    
-    mcpLogger.info('AI request completed successfully', { 
-      provider, 
-      model: chatRequest.model,
-      responseLength: formattedResponse.choices?.[0]?.message?.content?.length || 0
-    });
-    
-    sendResponse(mcpRequestHandler.createResponse(requestId, formattedResponse));
-    
   } catch (error) {
-    console.error('❌ === MCP CHAT ERROR ===');
-    console.error('💥 MCP Error:', error.message);
-    console.error('🔍 MCP Full Error:', error);
-    
-    const responseTime = Date.now() - startTime;
-    console.log('⏱️ MCP Error Response Time:', responseTime + 'ms');
-    console.log('❌ === MCP CHAT ERROR END ===\n');
+    console.log('âŒ === MCP CHAT ERROR ===');
+    console.log('ï¿½ MCP Error:', error.message);
+    console.log('ï¿½ MCP Full Error:', error);
     
     // Log error
-    logData.responseTime = responseTime;
-    logData.error = `Internal error: ${error.message}`;
+    logData.error = error.message;
+    logData.responseTime = Date.now() - startTime;
     await chatLogger.logChatInteraction(logData);
     
-    mcpLogger.error('Error in MCP AI message handler', { 
-      requestId, 
-      error: error.message, 
-      stack: error.stack 
+    console.log('â±ï¸ MCP Error Response Time:', logData.responseTime + 'ms');
+    console.log('âŒ === MCP CHAT ERROR END ===');
+    
+    mcpLogger.error('Error in MCP AI message handler', {
+      requestId,
+      error: error.message,
+      stack: error.stack
     });
     
     const mcpError = createMCPError(
-      MCP_ERROR_CODES.INTERNAL_ERROR,
-      `Internal error: ${error.message}`,
-      { originalError: error.message }
+      MCP_ERROR_CODES.UNKNOWN_ERROR,
+      error.message
     );
-    
     sendResponse(mcpRequestHandler.createResponse(requestId, null, mcpError));
   }
 }
@@ -1116,10 +3947,10 @@ async function handleAIMessage(messageData, sendResponse) {
   const startTime = Date.now();
   
   // Console logging for sidepanel chat interaction
-  console.log('🎯 === SIDEPANEL CHAT REQUEST ===');
-  console.log('📝 Messages:', messageData.messages);
-  console.log('💬 Prompt:', messageData.messages?.filter(msg => msg.role === 'user').map(msg => msg.content).join('\n'));
-  console.log('⏰ Timestamp:', new Date().toISOString());
+  console.log('ðŸŽ¯ === SIDEPANEL CHAT REQUEST ===');
+  console.log('ðŸ“ Messages:', messageData.messages);
+  console.log('ðŸ’¬ Prompt:', messageData.messages?.filter(msg => msg.role === 'user').map(msg => msg.content).join('\n'));
+  console.log('â° Timestamp:', new Date().toISOString());
   
   let logData = {
     provider: null,
@@ -1261,11 +4092,11 @@ async function handleAIMessage(messageData, sendResponse) {
     };
     
     // Console log the sidepanel request payload
-    console.log('🔧 Provider:', settings.provider);
-    console.log('🤖 Model:', settings.model);
-    console.log('📤 Sidepanel Request URL:', host);
-    console.log('📤 Sidepanel Request Headers:', headers);
-    console.log('📤 Sidepanel Request Body:', JSON.stringify(requestBody, null, 2));
+    console.log('ðŸ”§ Provider:', settings.provider);
+    console.log('ðŸ¤– Model:', settings.model);
+    console.log('ðŸ“¤ Sidepanel Request URL:', host);
+    console.log('ðŸ“¤ Sidepanel Request Headers:', headers);
+    console.log('ðŸ“¤ Sidepanel Request Body:', JSON.stringify(requestBody, null, 2));
     
     const response = await fetch(host, {
       method: 'POST',
@@ -1290,7 +4121,7 @@ async function handleAIMessage(messageData, sendResponse) {
     
     if (messageData.stream) {
       // Handle streaming response
-      console.log('📡 Starting streaming response...');
+      console.log('ðŸ“¡ Starting streaming response...');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       
@@ -1330,9 +4161,9 @@ async function handleAIMessage(messageData, sendResponse) {
       const responseTime = Date.now() - startTime;
       
       // Console log the streaming response completion
-      console.log('💬 Sidepanel Streaming Response Complete:', responseText);
-      console.log('⏱️ Sidepanel Streaming Response Time:', responseTime + 'ms');
-      console.log('✅ === SIDEPANEL STREAMING CHAT COMPLETE ===\n');
+      console.log('ðŸ’¬ Sidepanel Streaming Response Complete:', responseText);
+      console.log('â±ï¸ Sidepanel Streaming Response Time:', responseTime + 'ms');
+      console.log('âœ… === SIDEPANEL STREAMING CHAT COMPLETE ===\n');
       
       // Log streaming response
       logData.response = responseText;
@@ -1344,7 +4175,7 @@ async function handleAIMessage(messageData, sendResponse) {
     } else {
       // Handle regular response
       const data = await response.json();
-      console.log('📥 Sidepanel Raw API Response:', JSON.stringify(data, null, 2));
+      console.log('ðŸ“¥ Sidepanel Raw API Response:', JSON.stringify(data, null, 2));
       
       let content;
       
@@ -1365,10 +4196,10 @@ async function handleAIMessage(messageData, sendResponse) {
       const responseTime = Date.now() - startTime;
       
       // Console log the processed sidepanel response
-      console.log('💬 Sidepanel AI Response:', content);
-      console.log('⏱️ Sidepanel Response Time:', responseTime + 'ms');
-      console.log('📤 Sending response object:', { content });
-      console.log('✅ === SIDEPANEL CHAT COMPLETE ===\n');
+      console.log('ðŸ’¬ Sidepanel AI Response:', content);
+      console.log('â±ï¸ Sidepanel Response Time:', responseTime + 'ms');
+      console.log('ðŸ“¤ Sending response object:', { content });
+      console.log('âœ… === SIDEPANEL CHAT COMPLETE ===\n');
       
       // Log regular response
       logData.response = content;
@@ -1380,13 +4211,13 @@ async function handleAIMessage(messageData, sendResponse) {
     }
     
   } catch (error) {
-    console.error('❌ === SIDEPANEL CHAT ERROR ===');
-    console.error('💥 Sidepanel Error:', error.message);
-    console.error('🔍 Sidepanel Full Error:', error);
+    console.error('âŒ === SIDEPANEL CHAT ERROR ===');
+    console.error('ðŸ’¥ Sidepanel Error:', error.message);
+    console.error('ðŸ” Sidepanel Full Error:', error);
     
     const responseTime = Date.now() - startTime;
-    console.log('⏱️ Sidepanel Error Response Time:', responseTime + 'ms');
-    console.log('❌ === SIDEPANEL CHAT ERROR END ===\n');
+    console.log('â±ï¸ Sidepanel Error Response Time:', responseTime + 'ms');
+    console.log('âŒ === SIDEPANEL CHAT ERROR END ===\n');
     
     // Log error
     logData.responseTime = responseTime;
@@ -1406,7 +4237,7 @@ async function testConnection(settings, sendResponse) {
     };
     
     // Add authorization header only if API key is provided and not local
-    if (settings.apiKey && settings.apiKey !== 'local-no-key-required') {
+    if (settings.apiKey && settings.apiKey !== 'local-no-key-required' && settings.provider !== 'local') {
       if (settings.provider === 'azure') {
         headers['api-key'] = settings.apiKey;
       } else if (settings.provider === 'anthropic') {
@@ -1451,7 +4282,39 @@ async function testConnection(settings, sendResponse) {
 function getStoredSettings() {
   return new Promise((resolve) => {
     chrome.storage.sync.get(['aiSettings'], (result) => {
-      resolve(result.aiSettings || {});
+      let settings = result.aiSettings || {};
+      
+      // Migration: Update token limits to conserve credits (800 tokens)
+      if (settings.maxTokens === 2048 || settings.maxTokens === 1500) {
+        console.log('🔄 Migrating maxTokens from', settings.maxTokens, 'to 800');
+        settings.maxTokens = 800;
+        // Save the updated settings
+        chrome.storage.sync.set({ aiSettings: settings }, () => {
+          console.log('✅ Settings migration completed');
+        });
+      }
+      
+      // Apply local provider corrections consistently
+      if (settings.provider === 'local') {
+        console.log('🔧 Background: Applying local provider corrections');
+        settings.host = 'http://127.0.0.1:11434/api/chat';
+        settings.apiKey = ''; // Clear API key for local provider
+        console.log('🔧 Background: Local settings corrected - host:', settings.host, 'apiKey cleared:', !settings.apiKey);
+      }
+      
+      resolve(settings);
+    });
+  });
+}
+
+function setStoredSettings(settings) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.sync.set({ aiSettings: settings }, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve();
+      }
     });
   });
 }
@@ -1548,7 +4411,7 @@ async function fetchAvailableModels(settings, sendResponse) {
     };
 
     // Add authorization header based on available authentication
-    if (hasOAuthToken) {
+    if (hasOAuthToken && settings.provider !== 'local') {
       // Use OAuth token first if available
       const oauthToken = authData[`${settings.provider}_auth_token`];
       if (settings.provider === 'azure') {
@@ -1562,7 +4425,7 @@ async function fetchAvailableModels(settings, sendResponse) {
         headers['Authorization'] = `Bearer ${oauthToken}`;
       }
       console.log('Using OAuth authentication for models fetch');
-    } else if (hasApiKey) {
+    } else if (hasApiKey && settings.provider !== 'local') {
       // Fall back to API key
       if (settings.provider === 'azure') {
         headers['api-key'] = settings.apiKey;
@@ -1654,7 +4517,7 @@ async function fetchLocalModels(customHost) {
     customHost ? `${customHost}/v1/models` : null,
     customHost ? `${customHost}/api/tags` : null,
     // Ollama default
-    'http://localhost:11434/api/tags',
+    'http://127.0.0.1:11434/api/tags',
     // LM Studio default
     'http://localhost:1234/v1/models',
     // Text-generation-webui default
@@ -1746,13 +4609,30 @@ function getModelsEndpoint(provider, host) {
       return null;
     case 'local':
       // Try common local AI server endpoints
-      return host ? `${host}/v1/models` : 'http://localhost:11434/api/tags';
+      return host ? `${host}/v1/models` : 'http://127.0.0.1:11434/api/tags';
     case 'custom':
       return host ? `${host}/v1/models` : null;
     default:
       return null;
   }
 }
+
+// Handle keyboard shortcuts (Ctrl+M for automation)
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command === 'automation-hotkey') {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab) {
+      await chrome.sidePanel.open({ tabId: activeTab.id });
+      
+      // Send message to focus on automation
+      setTimeout(() => {
+        chrome.runtime.sendMessage({ 
+          action: 'focusAutomation' 
+        }).catch(() => {});
+      }, 500);
+    }
+  }
+});
 
 function parseModelsResponse(data, provider) {
   let models = [];
