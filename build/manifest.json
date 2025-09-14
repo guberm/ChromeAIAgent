@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChromeAiAgent",
   "version": "2.2.1",
-  "description": "AI-powered browser automation assistant that helps you interact with web pages through natural language commands. Features intelligent element detection and supports multiple AI providers.",
+  "description": "AI assistant for browser automation with natural language commands and intelligent web page interaction.",
   "permissions": [
     "storage",
     "sidePanel",
