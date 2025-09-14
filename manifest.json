@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChromeAiAgent",
-  "version": "2.2.0",
-  "description": "AI agent with browser automation capabilities and support for multiple LLM providers including OpenAI, Claude, Gemini, Groq, and more.",
+  "version": "2.2.1",
+  "description": "AI-powered browser automation assistant that helps you interact with web pages through natural language commands. Features intelligent element detection and supports multiple AI providers.",
   "permissions": [
     "storage",
     "sidePanel",

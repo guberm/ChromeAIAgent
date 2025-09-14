@@ -4,47 +4,41 @@
 ChromeAI Agent
 
 ## Short Description (132 characters max)
-Universal AI Assistant with 10+ providers: OpenAI, Claude, Gemini, OpenRouter. Smart chat, logs, Markdown support.
+AI assistant extension that provides intelligent web browsing help with natural language conversation interface.
 
 ## Detailed Description
-Transform your browsing experience with ChromeAI Agent - the ultimate AI assistant extension that brings the power of multiple AI providers directly to your browser.
+Transform your browsing experience with ChromeAI Agent - an intelligent assistant extension that brings AI-powered help directly to your browser.
 
-🤖 **Multi-Provider AI Support**
-Access 10+ leading AI services from one interface:
-• OpenAI (GPT-3.5, GPT-4, GPT-4 Turbo)
-• Anthropic Claude (Haiku, Sonnet, Opus)
-• Google Gemini (Pro, Ultra)
-• OpenRouter (50+ models, cost-effective)
-• GitHub Models (free tier available)
-• Groq (ultra-fast inference)
-• DeepSeek (coding-focused)
-• Perplexity (research & analysis)
-• Azure OpenAI (enterprise-grade)
-• Local AI servers
+🤖 **AI Assistant Features**
+Access powerful AI capabilities from one convenient interface:
+• Multiple AI service integrations
+• Smart conversation interface
+• Context-aware responses
+• Professional and educational use cases
 
 ✨ **Key Features**
 • Smart Chat Interface - Clean side panel accessible on any website
-• Page Context Awareness - AI automatically knows what page you're on
+• Page Context Awareness - AI automatically understands your current page
 • Conversation Logging - Complete chat history with search and export
-• Markdown Rendering - Rich text formatting in AI responses
-• Model Switching - Change providers/models without losing context
-• Default Provider - Set your preferred AI service
+• Rich Text Support - Formatted responses with markdown rendering
+• Model Selection - Choose from different AI capabilities
+• Default Settings - Configure your preferred AI service
 • New Chat Function - Start fresh conversations easily
 • Export Logs - Download conversation history as JSON
 
 🛡️ **Privacy & Security**
 • Local Storage - API keys stored securely in Chrome
 • No Data Collection - Zero telemetry or analytics
-• OAuth Support - Secure authentication for supported providers
+• Secure Authentication - OAuth support for compatible services
 • HTTPS Only - All communications encrypted
 
 🔧 **Easy Setup**
 1. Install the extension
 2. Choose your AI provider
-3. Enter API key or authenticate
-4. Start chatting with AI assistance
+3. Enter API credentials or authenticate
+4. Start getting AI assistance while browsing
 
-Perfect for developers, researchers, writers, students, and professionals who want AI assistance while browsing the web.
+Perfect for developers, researchers, writers, students, and professionals who want intelligent assistance while browsing the web.
 
 ## Category
 Productivity
