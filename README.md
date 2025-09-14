@@ -48,11 +48,25 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 - 💬 **Smart Chat Interface** - Clean, intuitive side panel
 - 🌐 **Page Context Awareness** - AI knows what page you're on
 - 📊 **Conversation Logging** - Complete chat history with search
+- 🤖 **Browser Automation** - 60+ automation actions for web interactions
+- 🎯 **Smart Element Detection** - AI-powered element finding and interaction
+- ⚡ **Multi-Action Commands** - Execute complex automation sequences
 - 🎨 **Markdown Rendering** - Rich text formatting in responses
 - 🔄 **Model Switching** - Change providers/models on the fly
 - ⚙️ **Default Provider** - Set your preferred AI service
 - 📤 **Export Logs** - Download conversation history
 - 🆕 **New Chat** - Start fresh conversations easily
+
+### 🤖 **Browser Automation**
+- 🖱️ **Mouse Actions** - Click, double-click, right-click, drag & drop
+- ⌨️ **Keyboard Actions** - Type text, press keys, keyboard shortcuts
+- 📝 **Form Handling** - Fill forms, select options, upload files, submit
+- 🪟 **Window Management** - Open/close tabs, resize windows, navigate
+- 📜 **Page Navigation** - Scroll, refresh, go back/forward, wait for elements
+- 🔍 **Data Extraction** - Get page content, element text, attributes, URLs
+- 🎨 **Visual Actions** - Take screenshots, highlight elements, inject CSS
+- ⚠️ **Alert Handling** - Accept/dismiss alerts, handle popups
+- 🔧 **Advanced Actions** - Execute scripts, wait conditions, event listeners
 
 ### 🛡️ **Privacy & Security**
 - 🔐 **Local Storage** - API keys stored securely in Chrome
