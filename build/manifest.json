@@ -2,16 +2,13 @@
   "manifest_version": 3,
   "name": "ChromeAiAgent",
   "version": "2.2.0",
-  "description": "AI-powered browser automation with comprehensive actions for web interaction, form handling, and page navigation",
+  "description": "AI agent with browser automation capabilities and support for multiple LLM providers including OpenAI, Claude, Gemini, Groq, and more.",
   "permissions": [
     "storage",
     "sidePanel",
     "activeTab",
     "tabs",
-    "identity",
-    "cookies",
-    "scripting",
-    "tabGroups"
+    "scripting"
   ],
   "host_permissions": [
     "https://api.openai.com/*",
@@ -22,28 +19,15 @@
     "https://api.perplexity.ai/*",
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://claude.ai/*",
     "https://*.openai.azure.com/*",
     "https://*.ai.azure.com/*",
-    "https://openrouter.ai/*",
-    "http://localhost:*/*",
-    "http://127.0.0.1:*/*",
-    "http://127.0.0.1:11434/*",
-    "http://*/*",
-    "https://*/*"
+    "https://openrouter.ai/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
-  },
-  "oauth2": {
-    "client_id": "your-google-client-id.apps.googleusercontent.com",
-    "scopes": [
-      "https://www.googleapis.com/auth/userinfo.email",
-      "https://www.googleapis.com/auth/generative-language"
-    ]
   },
   "commands": {
     "automation-hotkey": {

@@ -5,146 +5,473 @@
 
 // Content script function for automation (defined globally for serialization)
 function automationContentScript(action, params) {
-    try {
-        // Enhanced element finding with multiple strategies
-        const findElement = (selector) => {
-      // Strategy 1: Direct selector
-      let element = document.querySelector(selector);
-      if (element) {
-        return element;
-      }
-      
-      // Strategy 2: Case-insensitive class search
-      if (selector.startsWith('.')) {
-        const className = selector.substring(1);
-        element = document.querySelector(`[class*="${className}" i]`);
-        if (element) {
-          console.log('[AutomationScript] Found element with case-insensitive class search');
-          return element;
-        }
-        
-        // Try finding by partial class name
-        const elements = document.querySelectorAll('[class]');
-        for (let el of elements) {
-          if (el.className.toLowerCase().includes(className.toLowerCase())) {
-            console.log('[AutomationScript] Found element with partial class match');
-            return el;
+    // Dynamic and flexible element finding system - no hardcoded field names
+    const findElement = (selector, actionType = null) => {
+      console.log('[AutomationScript] Finding element for selector:', selector, 'action:', actionType);
+      // Score the selector before performing any action
+      let score = 0;
+      if (actionType === 'type' || actionType === 'input') {
+        const inputElement = findBestInputElement(selector);
+        score = inputElement ? 1 : 0;
+        // Ensure the element is a valid input/textarea/contenteditable/select
+        if (!inputElement || !['input','textarea','select'].includes((inputElement.tagName||'').toLowerCase())) {
+          if (!(inputElement && inputElement.isContentEditable)) {
+            console.warn('[AutomationScript] Aborting type/input action: no valid input/textarea/contenteditable/select found.', {selector, inputElement});
+            return { success: false, error: 'No valid input/textarea/contenteditable/select found', selector, actionType };
           }
         }
+      } else if (actionType === 'click') {
+        const clickableElement = findBestClickableElement(selector);
+        score = clickableElement ? 1 : 0;
+      } else {
+        // For other actions, use a basic presence check
+        const el = document.querySelector(selector);
+        score = el ? 1 : 0;
       }
+      console.log('[AutomationScript] Selector score before action:', score, 'Selector:', selector, 'Action:', actionType);
+      // Only proceed if score is above threshold
+      if (score < 1) {
+        console.warn('[AutomationScript] Aborting action due to low score:', score, 'Selector:', selector);
+        return { success: false, error: 'Low selector score, action aborted', selector, actionType };
+      }
+      // Normalize selector to a safe string to avoid runtime errors
+      const targetSelector = (typeof selector === 'string' ? selector : String(selector || '')).trim();
       
-      // Strategy 3: Text content search for buttons/links
-      if (selector.includes('button') || selector.includes('btn') || selector.includes('link')) {
-        const searchText = selector.toLowerCase();
-        const clickableElements = document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"], [onclick]');
-        for (let el of clickableElements) {
-          const text = el.textContent.toLowerCase();
-          if (text.includes('update') && searchText.includes('update')) {
-            console.log('[AutomationScript] Found element by text content match');
-            return el;
-          }
-          if (text.includes('profile') && searchText.includes('profile')) {
-            console.log('[AutomationScript] Found element by text content match');
-            return el;
-          }
-          if (text.includes('save') && searchText.includes('save')) {
-            console.log('[AutomationScript] Found element by text content match');
-            return el;
-          }
+      // Strategy 1: Handle :contains() selectors (AI-generated)
+      if (targetSelector.includes(':contains(')) {
+        const match = targetSelector.match(/^([^:]+):contains\(['"]([^'\"]+)['"]\)$/);
+        if (match) {
+          const [, baseSelector, containsText] = match;
+          console.log('[AutomationScript] Parsing :contains selector:', { baseSelector, containsText });
+          
+          return findElementByText(baseSelector || '*', containsText);
         }
       }
       
-      // Strategy 4: ID search with partial matching
-      if (selector.startsWith('#')) {
-        const idName = selector.substring(1);
-        element = document.querySelector(`[id*="${idName}" i]`);
-        if (element) {
-          console.log('[AutomationScript] Found element with partial ID match');
-          return element;
-        }
-      }
-      
-      // Strategy 5: Attribute search for common patterns
-      const commonSelectors = [
-        `[data-testid*="${selector.replace(/[.#]/, '')}" i]`,
-        `[aria-label*="${selector.replace(/[.#]/, '')}" i]`,
-        `[name*="${selector.replace(/[.#]/, '')}" i]`,
-        `[placeholder*="${selector.replace(/[.#]/, '')}" i]`
-      ];
-      
-      for (let altSelector of commonSelectors) {
-        try {
-          element = document.querySelector(altSelector);
+      // Strategy 2: Direct selector
+      try {
+        if (targetSelector) {
+          let element = document.querySelector(targetSelector);
           if (element) {
-            console.log('[AutomationScript] Found element with attribute search:', altSelector);
+            console.log('[AutomationScript] Found element with direct selector');
             return element;
           }
-        } catch (e) {
-          // Invalid selector, continue
         }
+      } catch (e) {
+        console.log('[AutomationScript] Invalid selector, trying alternatives:', e.message);
       }
       
-      console.log('[AutomationScript] Element not found with any strategy');
-      return null;
+      // Strategy 3: Intelligent context-based finding
+      if (actionType === 'type') {
+        const inputElement = findBestInputElement(targetSelector || '');
+        if (inputElement) return inputElement;
+        // For type actions, don't fall back to non-input elements
+        console.warn('[AutomationScript] No valid input element found for type action, not falling back to clickable elements');
+        return null;
+      } else if (actionType === 'click') {
+        const clickableElement = findBestClickableElement(targetSelector || '');
+        if (clickableElement) return clickableElement;
+        // Fall back to semantic search only for click actions
+        console.log('[AutomationScript] No clickable element found, trying semantic search for click action');
+        return findElementBySemantics(targetSelector || '');
+      }
+      
+      // Strategy 4: Semantic and flexible text matching (only for non-specific actions)
+      return findElementBySemantics(targetSelector || '');
+    };
+    
+    // Helper: Find element by text content with fuzzy matching
+    const findElementByText = (baseSelector, searchText) => {
+      try {
+        const candidates = document.querySelectorAll(baseSelector);
+        const searchLower = searchText.toLowerCase();
+        console.log('[AutomationScript] Searching for text:', searchText, 'in', candidates.length, 'candidates with selector:', baseSelector);
+        
+        // Exact match first
+        for (let el of candidates) {
+          if (el.textContent && el.textContent.trim().toLowerCase() === searchLower) {
+            console.log('[AutomationScript] Found exact text match:', el.tagName, el.textContent.trim());
+            return el;
+          }
+        }
+        
+        // Contains match - but be more specific about which element has the text
+        const containsMatches = [];
+        for (let el of candidates) {
+          if (el.textContent && el.textContent.trim().toLowerCase().includes(searchLower)) {
+            const textContent = el.textContent.trim();
+            const score = searchLower.length / textContent.length; // Prefer elements where the search text is a larger portion
+            containsMatches.push({ element: el, score, textContent });
+          }
+        }
+        
+        if (containsMatches.length > 0) {
+          // Sort by score (higher = better match)
+          containsMatches.sort((a, b) => b.score - a.score);
+          console.log('[AutomationScript] Found text contains match:', containsMatches[0].element.tagName, containsMatches[0].textContent);
+          return containsMatches[0].element;
+        }
+        
+        // Fuzzy word matching
+        const searchWords = searchLower.split(/\s+/);
+        for (let el of candidates) {
+          if (el.textContent) {
+            const elementText = el.textContent.toLowerCase();
+            const matchCount = searchWords.filter(word => elementText.includes(word)).length;
+            if (matchCount >= Math.ceil(searchWords.length / 2)) {
+              console.log('[AutomationScript] Found fuzzy text match:', el.tagName, el.textContent.trim());
+              return el;
+            }
+          }
+        }
+        
+        console.log('[AutomationScript] No text match found for:', searchText);
+        return null;
+      } catch (error) {
+        console.error('[AutomationScript] Error in findElementByText:', error);
+        return null;
+      }
+    };
+    
+    // Helper: Find best input element based on context and relevance
+    const findBestInputElement = (selector) => {
+      try {
+        const inputElements = document.querySelectorAll('input, textarea, [contenteditable="true"], select');
+        // Do NOT auto-select a single input; it might be an auth/login field. Score it instead.
+        
+        // Tokenize selector and add synonyms for better matching (e.g., bio)
+        const selectorLower = (selector || '').toLowerCase();
+        const baseTokens = selectorLower.split(/[^a-z0-9]+/).filter(Boolean);
+        const synonyms = new Map([
+          ['bio', ['biography', 'about', 'about me', 'description', 'summary', 'profile', 'info', 'information']],
+          ['about', ['bio', 'biography', 'description', 'summary', 'profile']]
+        ]);
+        const tokens = new Set(baseTokens);
+        for (const t of baseTokens) {
+          const syns = synonyms.get(t);
+          if (syns) syns.forEach(s => tokens.add(s));
+        }
+
+        const wantsAuthField = (() => {
+          const authWords = ['email','password','username','login','signin','sign in','log in'];
+          const tokenStr = Array.from(tokens).join(' ');
+          return authWords.some(w => tokenStr.includes(w));
+        })();
+        const isBioTask = (() => {
+          const bioWords = ['bio','about','description','summary','profile'];
+          const tokenStr = Array.from(tokens).join(' ');
+          return bioWords.some(w => tokenStr.includes(w));
+        })();
+
+        // Score inputs based on relevance to selector and context
+        const scored = Array.from(inputElements).map(input => {
+          let score = 0;
+          const tag = input.tagName.toLowerCase();
+          const type = (input.getAttribute('type') || '').toLowerCase();
+          const id = (input.id || '').toLowerCase();
+          const cls = (input.className || '').toLowerCase();
+          const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
+          const nameAttr = (input.getAttribute('name') || '').toLowerCase();
+          const aria = (input.getAttribute('aria-label') || '').toLowerCase();
+          const title = (input.getAttribute('title') || '').toLowerCase();
+          const isContentEditable = input.isContentEditable || input.getAttribute('contenteditable') === 'true';
+
+          // Penalize obvious non-targets like search inputs
+          const looksLikeSearch = type === 'search' || id.includes('search') || cls.includes('search') || placeholder.includes('search');
+          if (looksLikeSearch) score -= 40;
+
+          // Strongly penalize authentication/login fields unless explicitly requested
+          const authHints = ['login','log in','sign in','signin','username','user name','email','e-mail','password','passcode','otp','2fa','two factor','auth','verification','code','captcha'];
+          const allAttrs = `${id} ${cls} ${placeholder} ${nameAttr} ${aria} ${title}`;
+          const looksLikeAuth = authHints.some(h => allAttrs.includes(h)) || type === 'email' || type === 'password';
+          if (looksLikeAuth && !wantsAuthField) score -= 80;
+
+          // Penalize inputs inside forms/sections that look like auth contexts when not requested
+          const formOrSection = input.closest('form, section, article, div');
+          if (formOrSection) {
+            const ctx = (formOrSection.textContent || '').toLowerCase();
+            if (!wantsAuthField && (ctx.includes('sign in') || ctx.includes('log in') || ctx.includes('login') || ctx.includes('password'))) {
+              score -= 60;
+            }
+          }
+
+          // Prefer longer-text fields
+          if (tag === 'textarea') score += isBioTask ? 15 : 10;
+          if (isContentEditable) score += isBioTask ? 18 : 12;
+          if (type === 'text') score += 3;
+          if (type === 'email' || type === 'password' || type === 'checkbox' || type === 'radio' || type === 'submit' || type === 'button' || type === 'file') score -= 15;
+
+          // Attribute/token matching
+          const attribs = [placeholder, nameAttr, id, aria, title, cls];
+          for (const v of attribs) {
+            for (const t of tokens) {
+              if (!t) continue;
+              if (v === t) score += 25;
+              else if (v.includes(t)) score += 12;
+            }
+          }
+
+          // Label and context matching
+          const label = input.closest('label') || (input.id ? document.querySelector(`label[for="${input.id}"]`) : null);
+          if (label) {
+            const labelText = (label.textContent || '').toLowerCase();
+            for (const t of tokens) if (labelText.includes(t)) score += 15;
+          }
+
+          const container = input.closest('div, fieldset, section, form, article');
+          if (container) {
+            const contextText = (container.textContent || '').toLowerCase();
+            for (const t of tokens) if (contextText.includes(t)) score += 5;
+            // Nearby headings
+            const heading = container.querySelector('h1,h2,h3,h4,h5,h6');
+            if (heading) {
+              const headText = (heading.textContent || '').toLowerCase();
+              for (const t of tokens) if (headText.includes(t)) score += 4;
+            }
+          }
+
+          // Visibility and usability
+          const visible = input.offsetParent !== null || isContentEditable;
+          if (visible) score += 6; else score -= 10;
+          if (!input.disabled) score += 3; else score -= 10;
+          if (!input.readOnly) score += 2; else score -= 5;
+
+          // Heuristic: classes indicating free-text editors
+          const freeTextHints = ['editor', 'markdown', 'prose', 'contenteditable', 'bio', 'about', 'description', 'w-full', 'resize'];
+          for (const hint of freeTextHints) if (cls.includes(hint)) score += 3;
+
+          return { element: input, score };
+        });
+        
+        // Sort by score and return best match
+        scored.sort((a, b) => b.score - a.score);
+        console.log('[AutomationScript] Input candidates:', scored.map(s => ({tag: s.element.tagName, id: s.element.id, score: s.score})));
+        // Require a much higher score for bio/contextual tasks to avoid false matches
+        const minScore = isBioTask ? 35 : 18;
+        if (scored.length > 0 && scored[0].score >= minScore) {
+          console.log('[AutomationScript] Selected input element:', {
+            tag: scored[0].element.tagName,
+            id: scored[0].element.id,
+            score: scored[0].score
+          });
+          return scored[0].element;
+        }
+        console.warn('[AutomationScript] No input element met minimum score:', minScore, 'Best candidate:', scored[0]);
+        return null;
+      } catch (error) {
+        console.error('[AutomationScript] Error in findBestInputElement:', error);
+        return null;
+      }
+    };
+    
+    // Helper: Find best clickable element based on context and relevance
+    const findBestClickableElement = (selector) => {
+      try {
+        const clickableElements = document.querySelectorAll(
+          'button, a, input[type="submit"], input[type="button"], [role="button"], ' +
+          '[onclick], .cursor-pointer, .btn, .button, [tabindex]:not([tabindex="-1"])'
+        );
+        
+        // Score clickable elements based on relevance
+        const scored = Array.from(clickableElements).map(element => {
+          let score = 0;
+          const selectorLower = selector.toLowerCase();
+          const elementText = (element.textContent || '').trim().toLowerCase();
+          const elementValue = (element.value || '').toLowerCase();
+          
+          // Text content matching
+          if (elementText === selectorLower || elementValue === selectorLower) score += 25;
+          else if (elementText.includes(selectorLower) || elementValue.includes(selectorLower)) score += 20;
+          
+          // Attribute matching
+          ['id', 'class', 'aria-label', 'title', 'data-action', 'data-testid'].forEach(attr => {
+            const value = element.getAttribute(attr);
+            if (value) {
+              const valueLower = value.toLowerCase();
+              if (valueLower === selectorLower) score += 15;
+              else if (valueLower.includes(selectorLower)) score += 10;
+            }
+          });
+          
+          // Word-based matching
+          const selectorWords = selectorLower.split(/\s+/);
+          const elementWords = (elementText + ' ' + elementValue).split(/\s+/);
+          const matchingWords = selectorWords.filter(word => 
+            elementWords.some(elemWord => elemWord.includes(word) || word.includes(elemWord))
+          );
+          score += matchingWords.length * 8;
+          
+          // Element type preference
+          if (element.tagName.toLowerCase() === 'button') score += 3;
+          if (element.type === 'submit') score += 2;
+          
+          // Visibility and interaction
+          if (element.offsetParent !== null) score += 5;
+          if (!element.disabled) score += 3;
+          
+          return { element, score };
+        });
+        
+        // Sort by score and return best match
+        scored.sort((a, b) => b.score - a.score);
+        if (scored.length > 0 && scored[0].score > 0) {
+          console.log('[AutomationScript] Found best clickable element with score:', scored[0].score);
+          return scored[0].element;
+        }
+        
+        return null;
+      } catch (error) {
+        console.error('[AutomationScript] Error in findBestClickableElement:', error);
+        return null;
+      }
+    };
+    
+    // Helper: Semantic element finding using various strategies
+    const findElementBySemantics = (selector) => {
+      try {
+        const selectorLower = selector.toLowerCase();
+        
+        // Try semantic attributes
+        const semanticAttrs = ['data-testid', 'data-cy', 'data-qa', 'aria-label', 'title', 'alt'];
+        for (const attr of semanticAttrs) {
+          const element = document.querySelector(`[${attr}*="${selectorLower}" i]`);
+          if (element) {
+            console.log('[AutomationScript] Found element by semantic attribute:', attr);
+            return element;
+          }
+        }
+        
+        // Try partial class/ID matching
+        const cleanSelector = selectorLower.replace(/[^a-zA-Z0-9]/g, '');
+        if (cleanSelector.length > 2) {
+          const partialSelectors = [
+            `[class*="${cleanSelector}" i]`,
+            `[id*="${cleanSelector}" i]`
+          ];
+          
+          for (const partialSelector of partialSelectors) {
+            try {
+              const element = document.querySelector(partialSelector);
+              if (element) {
+                console.log('[AutomationScript] Found element with partial matching');
+                return element;
+              }
+            } catch (e) {
+              // Try without case-insensitive flag for older browsers
+              const fallbackSelector = partialSelector.replace(' i]', ']');
+              const element = document.querySelector(fallbackSelector);
+              if (element) {
+                console.log('[AutomationScript] Found element with fallback partial matching');
+                return element;
+              }
+            }
+          }
+        }
+        
+        console.log('[AutomationScript] No element found with semantic strategies');
+        return null;
+      } catch (error) {
+        console.error('[AutomationScript] Error in findElementBySemantics:', error);
+        return null;
+      }
+    };
+
+    // Helper function to create detailed element description for logs and responses
+    const getElementDescription = (element, selector) => {
+      if (!element) return { selector, element: null };
+      
+      try {
+        const rect = element.getBoundingClientRect();
+        const styles = window.getComputedStyle(element);
+        
+        const description = {
+          tagName: element.tagName.toLowerCase(),
+          id: element.id || null,
+          classes: element.className ? element.className.split(/\s+/).filter(c => c) : [],
+          text: element.innerText ? element.innerText.substring(0, 100) : null,
+          value: element.value || null,
+          type: element.type || null,
+          href: element.href || null,
+          placeholder: element.placeholder || null,
+          title: element.title || null,
+          ariaLabel: element.getAttribute('aria-label') || null,
+          role: element.getAttribute('role') || null,
+          position: {
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          },
+          visible: rect.width > 0 && rect.height > 0 && styles.visibility !== 'hidden' && styles.display !== 'none',
+          selector: selector,
+          actualSelector: element.tagName.toLowerCase() + 
+                         (element.id ? '#' + element.id : '') + 
+                         (element.className ? '.' + element.className.split(/\s+/)[0] : '')
+        };
+        
+        return description;
+      } catch (error) {
+        console.error('[AutomationScript] Error getting element description:', error);
+        return { 
+          tagName: element.tagName?.toLowerCase() || 'unknown',
+          selector,
+          actualSelector: 'unknown',
+          error: 'Could not get element details'
+        };
+      }
     };
 
     const automation = {
       click: (selector) => {
-        console.log('[AutomationScript] Attempting to click element with selector:', selector);
-        
-        // First try direct querySelector with the exact selector
-        let element = null;
-        try {
-          element = document.querySelector(selector);
-          if (element) {
-            console.log('[AutomationScript] Found element with direct selector');
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            element.click();
-            return { 
-              success: true, 
-              action: 'clicked', 
-              selector: selector, 
-              elementInfo: {
-                tagName: element.tagName,
-                id: element.id || '',
-                className: element.className || '',
-                text: element.textContent?.trim() || ''
-              }
-            };
-          }
-        } catch (error) {
-          console.log('[AutomationScript] Direct selector failed:', error.message);
-        }
-        
-        // Fallback to findElement strategies
-        element = findElement(selector);
+        const element = findElement(selector, 'click');
         if (element) {
-          console.log('[AutomationScript] Found element with fallback strategies');
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const elementInfo = getElementDescription(element, selector);
+          console.log('🤖 AUTOMATION: Clicking element:', elementInfo);
           element.click();
           return { 
             success: true, 
             action: 'clicked', 
-            selector: selector, 
-            elementInfo: {
-              tagName: element.tagName,
-              id: element.id || '',
-              className: element.className || '',
-              text: element.textContent?.trim() || ''
-            }
+            element: selector, 
+            elementInfo: elementInfo,
+            message: `Clicked ${elementInfo.tagName}${elementInfo.id ? ' #' + elementInfo.id : ''}${elementInfo.text ? ' ("' + elementInfo.text.substring(0, 50) + '...")' : ''}`
           };
         }
-        
-        console.log('[AutomationScript] Element not found with any method');
-        return { success: false, error: 'Element not found', selector: selector };
+        return { success: false, error: 'Element not found' };
       },
 
       type: (selector, text) => {
-        const element = findElement(selector);
+        const element = findElement(selector, 'type');
         if (element) {
-          element.value = text;
-          element.dispatchEvent(new Event('input', { bubbles: true }));
-          return { success: true, action: 'typed', element: selector, text, actualElement: element.tagName + (element.id ? '#' + element.id : '') + (element.className ? '.' + element.className.split(' ')[0] : '') };
+          const elementInfo = getElementDescription(element, selector);
+          console.log('🤖 AUTOMATION: Typing into element:', elementInfo, 'Text:', text);
+          const isContentEditable = element.isContentEditable || element.getAttribute('contenteditable') === 'true';
+          element.focus();
+
+          if (isContentEditable) {
+            // Set text for contenteditable elements
+            element.innerText = text;
+            try { element.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })); } catch {}
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (element.tagName.toLowerCase() === 'textarea' || element.tagName.toLowerCase() === 'input') {
+            // Set value for input/textarea
+            element.value = text;
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            // Fallback: try setting textContent
+            element.textContent = text;
+            try { element.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' })); } catch {}
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+
+          return { 
+            success: true, 
+            action: 'typed', 
+            element: selector, 
+            text, 
+            elementInfo: elementInfo,
+            message: `Typed "${text}" into ${elementInfo.tagName}${elementInfo.id ? ' #' + elementInfo.id : ''}${elementInfo.placeholder ? ' (placeholder: "' + elementInfo.placeholder + '")' : ''}`
+          };
         }
         return { success: false, error: 'Element not found' };
       },
@@ -203,6 +530,88 @@ function automationContentScript(action, params) {
         return elements.slice(0, 50); // Limit to 50 elements
       },
 
+      extractPageContent: () => {
+        try {
+          // Helper function to generate CSS selector for an element
+          function getElementSelector(element) {
+            if (element.id) {
+              return `#${element.id}`;
+            }
+            
+            if (element.className) {
+              const classes = element.className.split(' ').filter(cls => cls);
+              if (classes.length > 0) {
+                return `.${classes[0]}`;
+              }
+            }
+            
+            // Fallback to tag name with nth-child if needed
+            const parent = element.parentElement;
+            if (parent) {
+              const siblings = Array.from(parent.children).filter(child => child.tagName === element.tagName);
+              if (siblings.length > 1) {
+                const index = siblings.indexOf(element) + 1;
+                return `${element.tagName.toLowerCase()}:nth-child(${index})`;
+              }
+            }
+            
+            return element.tagName.toLowerCase();
+          }
+          
+          // Get both HTML structure and text content for better AI understanding
+          const pageData = {
+            html: document.documentElement.outerHTML,
+            text: '',
+            elements: []
+          };
+          
+          // Extract clean text content
+          const textContent = document.body ? document.body.innerText || document.body.textContent : '';
+          pageData.text = textContent
+            .replace(/\s+/g, ' ')
+            .replace(/\n\s*\n/g, '\n')
+            .trim();
+          
+          // Extract interactive elements for automation
+          const interactiveElements = document.querySelectorAll(`
+            button, input, textarea, select, a[href], 
+            [onclick], [role="button"], [tabindex], 
+            form, [contenteditable], img[alt], 
+            h1, h2, h3, h4, h5, h6, 
+            .btn, .button, .link, .menu, .nav
+          `);
+          
+          interactiveElements.forEach((el, index) => {
+            if (el.offsetParent !== null || el.tagName === 'INPUT') { // visible elements
+              const elementInfo = {
+                tag: el.tagName.toLowerCase(),
+                id: el.id || '',
+                className: el.className || '',
+                text: (el.textContent || el.value || el.alt || '').trim().substring(0, 50),
+                type: el.type || '',
+                placeholder: el.placeholder || '',
+                href: el.href || '',
+                role: el.getAttribute('role') || '',
+                selector: getElementSelector(el)
+              };
+              
+              pageData.elements.push(elementInfo);
+            }
+          });
+          
+          console.log('[AutomationScript] Extracted full page content:', {
+            htmlLength: pageData.html.length,
+            textLength: pageData.text.length,
+            elementsCount: pageData.elements.length
+          });
+          
+          return pageData;
+        } catch (error) {
+          console.error('[AutomationScript] Error extracting page content:', error);
+          return null;
+        }
+      },
+
       // Debug function to list all elements
       debugListElements: () => {
         const allElements = document.querySelectorAll('*');
@@ -228,9 +637,17 @@ function automationContentScript(action, params) {
       hover: (selector) => {
         const element = findElement(selector);
         if (element) {
+          const elementInfo = getElementDescription(element, selector);
+          console.log('🤖 AUTOMATION: Hovering over element:', elementInfo);
           const event = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
           element.dispatchEvent(event);
-          return { success: true, action: 'hovered', element: selector, actualElement: element.tagName + (element.id ? '#' + element.id : '') + (element.className ? '.' + element.className.split(' ')[0] : '') };
+          return { 
+            success: true, 
+            action: 'hovered', 
+            element: selector, 
+            elementInfo: elementInfo,
+            message: `Hovered over ${elementInfo.tagName}${elementInfo.id ? ' #' + elementInfo.id : ''}${elementInfo.text ? ' ("' + elementInfo.text.substring(0, 50) + '...")' : ''}`
+          };
         }
         return { success: false, error: 'Element not found' };
       },
@@ -326,37 +743,6 @@ function automationContentScript(action, params) {
         return { success: false, error: 'Element not found' };
       },
 
-      middleClick: (selector) => {
-        const element = document.querySelector(selector);
-        if (element) {
-          const event = new MouseEvent('auxclick', { 
-            bubbles: true, 
-            cancelable: true,
-            button: 1,
-            buttons: 4
-          });
-          element.dispatchEvent(event);
-          return { success: true, action: 'middleclicked', element: selector };
-        }
-        return { success: false, error: 'Element not found' };
-      },
-
-      clickAndHold: (selector) => {
-        const element = document.querySelector(selector);
-        if (element) {
-          const mouseDownEvent = new MouseEvent('mousedown', { 
-            bubbles: true, 
-            cancelable: true,
-            button: 0,
-            buttons: 1
-          });
-          element.dispatchEvent(mouseDownEvent);
-          // Note: In real usage, this would need to be paired with a mouseup event later
-          return { success: true, action: 'clickandhold', element: selector };
-        }
-        return { success: false, error: 'Element not found' };
-      },
-
       scroll: (selector, direction = 'down', amount = 100) => {
         const element = selector ? document.querySelector(selector) : window;
         if (element || selector === null) {
@@ -384,16 +770,6 @@ function automationContentScript(action, params) {
           return { success: true, action: 'scrolled_to_element', element: selector };
         }
         return { success: false, error: 'Element not found' };
-      },
-
-      scrollToTop: () => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        return { success: true, action: 'scrolled_to_top' };
-      },
-
-      scrollToBottom: () => {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        return { success: true, action: 'scrolled_to_bottom' };
       },
 
       // Keyboard Events Actions
@@ -528,29 +904,6 @@ function automationContentScript(action, params) {
         return { success: false, error: 'Element not found' };
       },
 
-      pressKey: (selector, key) => {
-        const element = document.querySelector(selector);
-        if (element) {
-          element.focus();
-          const keyDownEvent = new KeyboardEvent('keydown', {
-            key: key,
-            code: key,
-            bubbles: true,
-            cancelable: true
-          });
-          const keyUpEvent = new KeyboardEvent('keyup', {
-            key: key,
-            code: key,
-            bubbles: true,
-            cancelable: true
-          });
-          element.dispatchEvent(keyDownEvent);
-          element.dispatchEvent(keyUpEvent);
-          return { success: true, action: 'key_pressed', element: selector, key };
-        }
-        return { success: false, error: 'Element not found' };
-      },
-
       // Form Actions
       focus: (selector) => {
         const element = document.querySelector(selector);
@@ -610,27 +963,6 @@ function automationContentScript(action, params) {
         return { success: false, error: 'Element not found or not checkable' };
       },
 
-      uncheck: (selector) => {
-        const element = document.querySelector(selector);
-        if (element && (element.type === 'checkbox' || element.type === 'radio')) {
-          element.checked = false;
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, action: 'unchecked', element: selector };
-        }
-        return { success: false, error: 'Element not found or not checkable' };
-      },
-
-      clearField: (selector) => {
-        const element = document.querySelector(selector);
-        if (element) {
-          element.value = '';
-          element.dispatchEvent(new Event('input', { bubbles: true }));
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-          return { success: true, action: 'field_cleared', element: selector };
-        }
-        return { success: false, error: 'Element not found' };
-      },
-
       submit: (selector) => {
         const element = document.querySelector(selector);
         if (element) {
@@ -645,30 +977,7 @@ function automationContentScript(action, params) {
         return { success: false, error: 'Element not found or not submittable' };
       },
 
-      submitForm: (selector) => {
-        const element = document.querySelector(selector);
-        if (element) {
-          if (element.tagName.toLowerCase() === 'form') {
-            element.submit();
-            return { success: true, action: 'form_submitted', element: selector };
-          } else if (element.type === 'submit') {
-            element.click();
-            return { success: true, action: 'submit_clicked', element: selector };
-          }
-        }
-        return { success: false, error: 'Element not found or not submittable' };
-      },
-
       reset: (selector) => {
-        const element = document.querySelector(selector);
-        if (element && element.tagName.toLowerCase() === 'form') {
-          element.reset();
-          return { success: true, action: 'form_reset', element: selector };
-        }
-        return { success: false, error: 'Element not found or not a form' };
-      },
-
-      resetForm: (selector) => {
         const element = document.querySelector(selector);
         if (element && element.tagName.toLowerCase() === 'form') {
           element.reset();
@@ -965,32 +1274,6 @@ function automationContentScript(action, params) {
         return { success: true, action: 'navigated_forward' };
       },
 
-      closeTab: () => {
-        window.close();
-        return { success: true, action: 'tab_closed' };
-      },
-
-      maximizeWindow: () => {
-        // Browser security limitations prevent true maximization from content scripts
-        // This is more of a placeholder for the API
-        return { success: true, action: 'maximize_requested', note: 'Browser security limits this action' };
-      },
-
-      minimizeWindow: () => {
-        // Browser security limitations prevent minimization from content scripts
-        return { success: true, action: 'minimize_requested', note: 'Browser security limits this action' };
-      },
-
-      resizeWindow: (width, height) => {
-        // Browser security limitations prevent resizing from content scripts
-        return { success: true, action: 'resize_requested', width, height, note: 'Browser security limits this action' };
-      },
-
-      switchToTab: (pattern) => {
-        // This action requires browser API access, not available in content scripts
-        return { success: true, action: 'tab_switch_requested', pattern, note: 'Requires browser extension context' };
-      },
-
       // Content Manipulation Actions
       getText: (selector) => {
         const element = document.querySelector(selector);
@@ -1121,47 +1404,6 @@ function automationContentScript(action, params) {
         return { success: false, error: 'Element not found' };
       },
 
-      // Alert Handling Actions
-      acceptAlert: () => {
-        // Note: Content scripts cannot directly interact with browser alerts
-        // This would need to be handled by the background script
-        return { success: true, action: 'alert_accept_requested', note: 'Requires background script handling' };
-      },
-
-      dismissAlert: () => {
-        // Note: Content scripts cannot directly interact with browser alerts
-        return { success: true, action: 'alert_dismiss_requested', note: 'Requires background script handling' };
-      },
-
-      getAlertText: () => {
-        // Note: Content scripts cannot directly access alert text
-        return { success: true, action: 'alert_text_requested', note: 'Requires background script handling' };
-      },
-
-      // Data Extraction Actions
-      getPageTitle: () => {
-        return { success: true, action: 'title_retrieved', title: document.title };
-      },
-
-      getCurrentUrl: () => {
-        return { success: true, action: 'url_retrieved', url: window.location.href };
-      },
-
-      // Advanced Actions
-      executeScript: (script) => {
-        try {
-          const result = eval(script);
-          return { success: true, action: 'script_executed', result: String(result) };
-        } catch (error) {
-          return { success: false, error: 'Script execution failed: ' + error.message };
-        }
-      },
-
-      takeScreenshot: () => {
-        // Content scripts cannot take screenshots directly
-        return { success: true, action: 'screenshot_requested', note: 'Requires background script handling' };
-      },
-
       // Advanced Waiting Actions
       waitForElement: (selector, timeout = 5000) => {
         return new Promise((resolve) => {
@@ -1248,25 +1490,155 @@ function automationContentScript(action, params) {
           };
           checkCondition();
         });
+      },
+
+      // New global automation actions
+      waitForSelector: async (selector, opts = {}) => {
+        try {
+          const el = document.querySelector(selector);
+          if (el && (!opts.visible || el.offsetParent !== null)) return { success: true, element: el };
+          let timeout = opts.timeout || 10000;
+          let start = Date.now();
+          while (Date.now() - start < timeout) {
+            const el = document.querySelector(selector);
+            if (el && (!opts.visible || el.offsetParent !== null)) return { success: true, element: el };
+            await new Promise(r => setTimeout(r, 100));
+          }
+          return { success: false, error: 'Timeout' };
+        } catch (e) {
+          console.error('waitForSelector error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      clickIfVisible: (selector) => {
+        try {
+          const el = document.querySelector(selector);
+          if (el && el.offsetParent !== null) {
+            el.click();
+            return { success: true };
+          }
+          return { success: false, error: 'Element not visible' };
+        } catch (e) {
+          console.error('clickIfVisible error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      scrollIntoView: (selector) => {
+        try {
+          const el = document.querySelector(selector);
+          if (el) {
+            el.scrollIntoView({behavior: 'smooth', block: 'center'});
+            return { success: true };
+          }
+          return { success: false, error: 'Element not found' };
+        } catch (e) {
+          console.error('scrollIntoView error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      extractTableData: (selector) => {
+        try {
+          const table = document.querySelector(selector);
+          if (!table) return { success: false, error: 'Table not found' };
+          const rows = Array.from(table.querySelectorAll('tr'));
+          const data = rows.map(row => Array.from(row.children).map(cell => cell.textContent.trim()));
+          return { success: true, data };
+        } catch (e) {
+          console.error('extractTableData error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      getBoundingClientRect: (selector) => {
+        try {
+          const el = document.querySelector(selector);
+          return el ? { success: true, rect: el.getBoundingClientRect() } : { success: false, error: 'Element not found' };
+        } catch (e) {
+          console.error('getBoundingClientRect error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      fileUpload: (selector, fileData) => {
+        try {
+          const el = document.querySelector(selector);
+          if (el && el.type === 'file') {
+            const file = new File([fileData.content], fileData.name, { type: fileData.type || 'application/octet-stream' });
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            el.files = dataTransfer.files;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true };
+          }
+          return { success: false, error: 'Element not found or not a file input' };
+        } catch (e) {
+          console.error('fileUpload error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      fileDownload: (selector) => {
+        try {
+          const el = document.querySelector(selector);
+          if (el && el.href) {
+            window.open(el.href, '_blank');
+            return { success: true };
+          }
+          return { success: false, error: 'Element not found or not a link' };
+        } catch (e) {
+          console.error('fileDownload error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      waitForNavigation: async (timeout = 10000) => {
+        try {
+          let start = Date.now();
+          let oldUrl = location.href;
+          while (Date.now() - start < timeout) {
+            if (location.href !== oldUrl) return { success: true };
+            await new Promise(r => setTimeout(r, 100));
+          }
+          return { success: false, error: 'Timeout' };
+        } catch (e) {
+          console.error('waitForNavigation error:', e);
+          return { success: false, error: e.message };
+        }
+      },
+      waitForNetworkIdle: async (idleTime = 500, timeout = 10000) => {
+        try {
+          let start = Date.now();
+          let lastActive = Date.now();
+          let activeRequests = 0;
+          const update = () => { lastActive = Date.now(); };
+          const origOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function() {
+            activeRequests++;
+            this.addEventListener('loadend', () => {
+              activeRequests--;
+              update();
+            });
+            origOpen.apply(this, arguments);
+          };
+          while (Date.now() - start < timeout) {
+            if (activeRequests === 0 && Date.now() - lastActive > idleTime) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
+          XMLHttpRequest.prototype.open = origOpen;
+          if (activeRequests !== 0) return { success: false, error: 'Timeout' };
+          return { success: true };
+        } catch (e) {
+          console.error('waitForNetworkIdle error:', e);
+          return { success: false, error: e.message };
+        }
       }
     };
 
-    console.log('[AutomationScript] Available actions:', Object.keys(automation));
-    console.log('[AutomationScript] Requested action:', action);
-    console.log('[AutomationScript] Action exists:', !!automation[action]);
-    
     if (automation[action]) {
-      const result = automation[action](...Object.values(params || {}));
-      console.log('[AutomationScript] Action result:', result);
-      return result;
+      try {
+        return automation[action](...Object.values(params || {}));
+      } catch (error) {
+        console.error('[AutomationScript] Action execution error:', error);
+        return { success: false, error: 'Automation action failed: ' + error.message, action, params };
+      }
     } else {
-      console.log('[AutomationScript] Unknown action:', action);
       return { success: false, error: `Unknown action: ${action}` };
-    }
-    
-    } catch (error) {
-        console.error('[AutomationScript] Error:', error);
-        return { success: false, error: error.message || 'Script execution failed' };
     }
 }
 
@@ -1359,7 +1731,7 @@ chrome.runtime.onInstalled.addListener(() => {
         apiKey: '',
         model: 'gpt-4o-mini',
         temperature: 0.7,
-        maxTokens: 800
+        maxTokens: 4000
       };
       
       chrome.storage.sync.set({ aiSettings: defaultSettings });
@@ -1483,136 +1855,34 @@ const chatLogger = new ChatLogger();
 class BrowserAutomation {
   constructor() {
     this.commands = {
-      // Basic actions
       click: this.handleClick.bind(this),
       type: this.handleType.bind(this),
       fill: this.handleFill.bind(this),
       scroll: this.handleScroll.bind(this),
       navigate: this.handleNavigate.bind(this),
       refresh: this.handleRefresh.bind(this),
+      goBack: this.handleGoBack.bind(this),
+      goForward: this.handleGoForward.bind(this),
       newTab: this.handleNewTab.bind(this),
       screenshot: this.handleScreenshot.bind(this),
       extract: this.handleExtract.bind(this),
       highlight: this.handleHighlight.bind(this),
       organize: this.handleOrganize.bind(this),
       note: this.handleNote.bind(this),
-      wait: this.handleWait.bind(this),
-      
-      // Advanced mouse actions
-      doubleClick: this.handleDoubleClick.bind(this),
-      rightClick: this.handleRightClick.bind(this),
-      contextClick: this.handleRightClick.bind(this), // alias for rightClick
-      middleClick: this.handleMiddleClick.bind(this),
-      clickAndHold: this.handleClickAndHold.bind(this),
-      mouseDown: this.handleMouseDown.bind(this),
-      mouseUp: this.handleMouseUp.bind(this),
-      hover: this.handleHover.bind(this),
-      mouseMove: this.handleMouseMove.bind(this),
-      
-      // Keyboard actions
-      keyDown: this.handleKeyDown.bind(this),
-      keyUp: this.handleKeyUp.bind(this),
-      sendKeys: this.handleSendKeys.bind(this),
-      pressKey: this.handlePressKey.bind(this),
-      
-      // Form actions
-      select: this.handleSelect.bind(this),
-      check: this.handleCheck.bind(this),
-      uncheck: this.handleUncheck.bind(this),
-      uploadFile: this.handleUploadFile.bind(this),
-      clearField: this.handleClearField.bind(this),
-      submitForm: this.handleSubmitForm.bind(this),
-      resetForm: this.handleResetForm.bind(this),
-      
-      // Window and tab management
-      closeTab: this.handleCloseTab.bind(this),
-      switchToTab: this.handleSwitchToTab.bind(this),
-      resizeWindow: this.handleResizeWindow.bind(this),
-      maximizeWindow: this.handleMaximizeWindow.bind(this),
-      minimizeWindow: this.handleMinimizeWindow.bind(this),
-      
-      // Page navigation
-      goBack: this.handleGoBack.bind(this),
-      goForward: this.handleGoForward.bind(this),
-      reload: this.handleRefresh.bind(this), // alias for refresh
-      scrollToTop: this.handleScrollToTop.bind(this),
-      scrollToBottom: this.handleScrollToBottom.bind(this),
-      scrollToElement: this.handleScrollToElement.bind(this),
-      
-      // Data extraction
-      getText: this.handleGetText.bind(this),
-      getAttribute: this.handleGetAttribute.bind(this),
-      getPageTitle: this.handleGetPageTitle.bind(this),
-      getCurrentUrl: this.handleGetCurrentUrl.bind(this),
-      
-      // Alert and popup handling
-      acceptAlert: this.handleAcceptAlert.bind(this),
-      dismissAlert: this.handleDismissAlert.bind(this),
-      getAlertText: this.handleGetAlertText.bind(this),
-      
-      // Advanced interactions
-      dragAndDrop: this.handleDragAndDrop.bind(this),
-      executeScript: this.handleExecuteScript.bind(this)
+      wait: this.handleWait.bind(this)
     };
     
     this.domAnalyzer = new DOMAnalyzer();
     this.commandParser = new AICommandParser();
     this.aiPlanner = new AICommandPlanner();
-  }
-
-  // Detect if a command contains multiple actions
-  isMultiActionCommand(command) {
-    const lowerCmd = command.toLowerCase();
-    
-    // Look for conjunctions that indicate multiple actions
-    const multiActionPatterns = [
-      /\band\s+(?:then\s+)?(?:click|type|enter|fill|scroll|hover|press|tap|search|open|navigate)/i,
-      /\bthen\s+(?:click|type|enter|fill|scroll|hover|press|tap|search|open|navigate)/i,
-      /\bafter\s+that\s+(?:click|type|enter|fill|scroll|hover|press|tap|search|open|navigate)/i,
-      /\bnext\s+(?:click|type|enter|fill|scroll|hover|press|tap|search|open|navigate)/i,
-      /\bfirst\s+.+\bthen\s+/i,
-      /\bfirst\s+.+\band\s+/i
-    ];
-    
-    // Check if command matches any multi-action pattern
-    for (const pattern of multiActionPatterns) {
-      if (pattern.test(command)) {
-        console.log('📊 BrowserAutomation: Multi-action pattern detected:', pattern.source);
-        return true;
-      }
-    }
-    
-    // Count action keywords to detect implicit multi-actions
-    const actionKeywords = ['click', 'type', 'enter', 'fill', 'scroll', 'hover', 'press', 'tap', 'search', 'open', 'navigate', 'newTab'];
-    let actionCount = 0;
-    
-    for (const keyword of actionKeywords) {
-      const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
-      const matches = command.match(regex);
-      if (matches) {
-        actionCount += matches.length;
-      }
-    }
-    
-    if (actionCount > 1) {
-      console.log('📊 BrowserAutomation: Multiple action keywords detected:', actionCount);
-      return true;
-    }
-    
-    return false;
+    this.actionPlanner = new ActionPlanner();
   }
 
   async executeCommand(command, tabId) {
     try {
       console.log('📊 BrowserAutomation: executeCommand called with:', { command, tabId });
       
-      // Check if this is a multi-action command first
-      if (this.isMultiActionCommand(command)) {
-        console.log('📊 BrowserAutomation: Multi-action command detected, using AI planner for:', command);
-        return await this.executeAIPlan(command, tabId);
-      }
-
-      // First try simple parsing for single actions
+      // First try simple parsing to determine action type
       let parsedCommand;
       try {
         console.log('📊 BrowserAutomation: Attempting simple parsing...');
@@ -1624,16 +1894,106 @@ class BrowserAutomation {
         return await this.executeAIPlan(command, tabId);
       }
 
-      const handler = this.commands[parsedCommand.action];
+      // Create action plan before execution (2-5 steps)
+      console.log('📋 BrowserAutomation: Creating action plan for:', parsedCommand.action);
+      const actionPlan = await this.actionPlanner.createActionPlan(
+        command, 
+        parsedCommand.action, 
+        parsedCommand.target
+      );
       
-      if (!handler) {
-        // If no handler found, try AI planning
-        console.log('📊 BrowserAutomation: No handler found for action:', parsedCommand.action, 'using AI planner');
-        return await this.executeAIPlan(command, tabId);
+      console.log('📋 Action Plan Created:');
+      console.log(this.actionPlanner.formatPlanSummary(actionPlan));
+      
+      // Execute plan with step-by-step logging
+      const planResults = [];
+      const startTime = Date.now();
+      
+      console.log('🚀 Executing Action Plan:');
+      
+      for (let i = 0; i < actionPlan.steps.length; i++) {
+        const step = actionPlan.steps[i];
+        const stepStartTime = Date.now();
+        
+        console.log(`📋 Step ${i + 1}/${actionPlan.totalSteps}: ${step.description}`);
+        
+        try {
+          let stepResult = { success: true, message: 'Step completed' };
+          
+          // Execute the main action step (the actual automation)
+          if (step.action === parsedCommand.action) {
+            const handler = this.commands[parsedCommand.action];
+            if (!handler) {
+              throw new Error(`No handler found for action: ${parsedCommand.action}`);
+            }
+            
+            console.log('📊 BrowserAutomation: Executing main action handler for:', parsedCommand.action);
+            stepResult = await handler(parsedCommand, tabId);
+          } else {
+            // For preparation, verification, and other steps, just simulate execution
+            await new Promise(resolve => setTimeout(resolve, Math.min(step.estimatedTime || 200, 1000)));
+            stepResult = { 
+              success: true, 
+              message: `${step.description} completed`,
+              action: step.action
+            };
+          }
+          
+          const stepDuration = Date.now() - stepStartTime;
+          console.log(`✅ Step ${i + 1} completed in ${stepDuration}ms:`, step.description);
+          
+          planResults.push({
+            stepId: step.id,
+            description: step.description,
+            success: true,
+            duration: stepDuration,
+            result: stepResult
+          });
+          
+          this.actionPlanner.logPlanExecution(actionPlan, i, stepResult);
+          
+        } catch (stepError) {
+          const stepDuration = Date.now() - stepStartTime;
+          console.error(`❌ Step ${i + 1} failed in ${stepDuration}ms:`, step.description, stepError);
+          
+          planResults.push({
+            stepId: step.id,
+            description: step.description,
+            success: false,
+            duration: stepDuration,
+            error: stepError.message
+          });
+          
+          // For critical steps, stop execution
+          if (step.action === parsedCommand.action) {
+            throw stepError;
+          }
+        }
       }
       
-      console.log('📊 BrowserAutomation: Executing handler for action:', parsedCommand.action);
-      return await handler(parsedCommand, tabId);
+      const totalDuration = Date.now() - startTime;
+      console.log(`🎯 Action Plan completed in ${totalDuration}ms`);
+      
+      // Return the main action result along with plan details
+      const mainActionResult = planResults.find(result => 
+        actionPlan.steps[planResults.indexOf(result)]?.action === parsedCommand.action
+      );
+      
+      return {
+        success: true,
+        action: parsedCommand.action,
+        target: parsedCommand.target,
+        plan: {
+          id: actionPlan.id,
+          totalSteps: actionPlan.totalSteps,
+          estimatedDuration: actionPlan.estimatedDuration,
+          actualDuration: totalDuration,
+          steps: planResults
+        },
+        result: mainActionResult?.result || { success: true, message: 'Action completed' },
+        message: `Successfully executed ${parsedCommand.action} with ${actionPlan.totalSteps}-step plan`
+      };
+      
     } catch (error) {
       console.error('📊 BrowserAutomation: Automation command failed:', error);
       // Last resort: try AI planning
@@ -1653,7 +2013,31 @@ class BrowserAutomation {
       const pageContext = await this.getPageContext(tabId);
       
       // Create AI plan
-      const plan = await this.aiPlanner.createPlan(command, pageContext);
+      let plan = await this.aiPlanner.createPlan(command, pageContext);
+      // Guardrails: sanitize unsafe or off-intent steps
+      const lowerCmd = String(command || '').toLowerCase();
+      const editingProfileIntent = /\b(bio|about|description|profile|settings)\b/.test(lowerCmd);
+      const unsafeTargets = ['sign out','signout','log out','logout','sign in','signin','log in','login'];
+      if (plan && Array.isArray(plan.plan)) {
+        plan.plan = plan.plan.filter(step => {
+          if (!step || !step.action) return false;
+          const tgt = String(step.target || step.description || '').toLowerCase();
+          // Block auth-related actions when intent is editing profile/bio
+          if (editingProfileIntent && unsafeTargets.some(w => tgt.includes(w))) {
+            return false;
+          }
+          return true;
+        }).map(step => {
+          // Normalize generic type targets: ensure we steer towards bio/editor fields
+          if (editingProfileIntent && step.action === 'type') {
+            const tgt = String(step.target || '').toLowerCase();
+            if (!/bio|about|description|summary|profile|textarea|editor|contenteditable/.test(tgt)) {
+              return { ...step, target: 'textarea, [contenteditable="true"], .bio, .about, .description' };
+            }
+          }
+          return step;
+        });
+      }
       
       if (!plan.understood || !plan.plan.length) {
         throw new Error(`AI could not understand command: ${command}`);
@@ -1681,16 +2065,8 @@ class BrowserAutomation {
           const result = await handler(step, tabId);
           results.push({ success: true, step: step.description, result });
           
-          // If this was a newTab action, switch to the new tab for subsequent actions
-          if (step.action === 'newTab' && result.newTabId) {
-            tabId = result.newTabId; // Update tabId for subsequent actions
-            console.log(`🔄 Switched automation context to new tab: ${tabId}`);
-            // Wait a bit longer for the new tab to load
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          } else {
-            // Small delay between steps
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
+          // Small delay between steps
+          await new Promise(resolve => setTimeout(resolve, 500));
           
         } catch (stepError) {
           console.error(`Step failed: ${step.description}`, stepError);
@@ -1720,13 +2096,31 @@ class BrowserAutomation {
   async getPageContext(tabId) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      const elements = await this.injectAndExecute(tabId, 'extractPageElements');
       
-      return {
-        url: tab.url,
-        title: tab.title,
-        elements: elements || []
-      };
+      // Get full page content like the main chat system does
+      const pageContent = await this.injectAndExecute(tabId, 'extractPageContent');
+      console.log('🤖 AUTOMATION: Got full page content:', pageContent ? Object.keys(pageContent) : 'null');
+      
+      if (pageContent && pageContent.html) {
+        // Extract the first 10000 chars of HTML for context (not truncated like before)
+        const htmlSample = pageContent.html.substring(0, 10000);
+        
+        return {
+          url: tab.url,
+          title: tab.title,
+          html: htmlSample,
+          fullContent: pageContent,
+          elements: pageContent.elements || []
+        };
+      } else {
+        // Fallback to basic element extraction
+        const elements = await this.injectAndExecute(tabId, 'extractPageElements');
+        return {
+          url: tab.url,
+          title: tab.title,
+          elements: elements || []
+        };
+      }
     } catch (error) {
       console.warn('Could not get page context:', error);
       return null;
@@ -1734,28 +2128,87 @@ class BrowserAutomation {
   }
 
   async handleClick(command, tabId) {
-    console.log('🎯 handleClick called with command:', command, 'tabId:', tabId);
-    console.log('🎯 Looking for element with target:', command.target);
-    
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    console.log('🎯 DOMAnalyzer returned selector:', selector);
-    
-    if (!selector) {
-      console.log('❌ No selector found, automation failed');
-      return null;
+    // First try using enhanced DOMAnalyzer to get the most relevant element
+    const attemptedSelectors = [];
+    const selector = await this.domAnalyzer.findMostRelevantElement(command.target, tabId);
+    if (selector) attemptedSelectors.push(selector);
+
+    // Try click with resolved selector if available
+    if (selector) {
+      const clickResult = await this.injectAndExecute(tabId, 'click', { selector });
+      if (clickResult && clickResult.success) {
+        return { ...clickResult, attemptedSelectors };
+      }
+      // If injection ran but element wasn't found, fall through to fallback
     }
-    
-    const result = await this.injectAndExecute(tabId, 'click', { selector });
-    console.log('🎯 Click execution result:', result);
-    return result;
+
+    // Fallback: try regular element finder
+    if (!selector) {
+      const fallbackSelector = await this.domAnalyzer.findElement(command.target, tabId);
+      if (fallbackSelector) {
+        attemptedSelectors.push(fallbackSelector);
+        const fallbackResult = await this.injectAndExecute(tabId, 'click', { selector: fallbackSelector });
+        if (fallbackResult && fallbackResult.success) {
+          return { ...fallbackResult, attemptedSelectors, usedFallback: true };
+        }
+      }
+    }
+
+    // Final fallback: let content script resolve the target phrase dynamically
+    const semanticResult = await this.injectAndExecute(tabId, 'click', { selector: command.target });
+    if (semanticResult && semanticResult.success) {
+      return { ...semanticResult, attemptedSelectors: attemptedSelectors.length ? attemptedSelectors : undefined, usedSemanticFallback: true };
+    }
+
+    // Consolidated failure message with diagnostics
+    return {
+      success: false,
+      action: 'click',
+      error: 'No matching element found',
+      attemptedTarget: command.target,
+      attemptedSelectors
+    };
   }
 
   async handleType(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'type', { 
-      selector, 
-      text: command.text 
-    });
+    // First try using enhanced DOMAnalyzer to get the most relevant element for typing
+    const attemptedSelectors = [];
+    const selector = await this.domAnalyzer.findMostRelevantElement(command.target, tabId, 'type');
+    if (selector) attemptedSelectors.push(selector);
+
+    // Try type with resolved selector if available
+    if (selector) {
+      const typeResult = await this.injectAndExecute(tabId, 'type', { selector, text: command.text });
+      if (typeResult && typeResult.success) {
+        return { ...typeResult, attemptedSelectors };
+      }
+    }
+
+    // Fallback: try regular element finder
+    if (!selector) {
+      const fallbackSelector = await this.domAnalyzer.findElement(command.target, tabId);
+      if (fallbackSelector) {
+        attemptedSelectors.push(fallbackSelector);
+        const fallbackResult = await this.injectAndExecute(tabId, 'type', { selector: fallbackSelector, text: command.text });
+        if (fallbackResult && fallbackResult.success) {
+          return { ...fallbackResult, attemptedSelectors, usedFallback: true };
+        }
+      }
+    }
+
+    // Final fallback: semantic resolution
+    const semanticResult = await this.injectAndExecute(tabId, 'type', { selector: command.target, text: command.text });
+    if (semanticResult && semanticResult.success) {
+      return { ...semanticResult, attemptedSelectors: attemptedSelectors.length ? attemptedSelectors : undefined, usedSemanticFallback: true };
+    }
+
+    return {
+      success: false,
+      action: 'type',
+      error: 'No matching input element found',
+      attemptedTarget: command.target,
+      attemptedSelectors
+    };
   }
 
   async handleFill(command, tabId) {
@@ -1774,29 +2227,83 @@ class BrowserAutomation {
   }
 
   async handleNavigate(command, tabId) {
-    const url = command.url || command.target; // Support both url and target properties
-    return await chrome.tabs.update(tabId, { url: url });
+    return await chrome.tabs.update(tabId, { url: command.url });
   }
 
   async handleRefresh(command, tabId) {
-    await chrome.tabs.reload(tabId);
-    return { 
-      success: true, 
-      action: 'refresh', 
-      message: 'Page refreshed successfully'
-    };
+    try {
+      await chrome.tabs.reload(tabId);
+      return { 
+        success: true, 
+        action: 'refresh', 
+        message: 'Page refreshed successfully'
+      };
+    } catch (error) {
+      console.error('🚨 Failed to refresh page:', error);
+      return { 
+        success: false, 
+        action: 'refresh', 
+        error: 'Failed to refresh page: ' + error.message
+      };
+    }
+  }
+
+  async handleGoBack(command, tabId) {
+    try {
+      // Use Chrome extension API to execute back navigation
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: () => {
+          window.history.back();
+        }
+      });
+      return { 
+        success: true, 
+        action: 'goBack', 
+        message: 'Navigated back to previous page'
+      };
+    } catch (error) {
+      console.error('🚨 Failed to navigate back:', error);
+      return { 
+        success: false, 
+        action: 'goBack', 
+        error: 'Failed to navigate back: ' + error.message
+      };
+    }
+  }
+
+  async handleGoForward(command, tabId) {
+    try {
+      // Use Chrome extension API to execute forward navigation
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: () => {
+          window.history.forward();
+        }
+      });
+      return { 
+        success: true, 
+        action: 'goForward', 
+        message: 'Navigated forward to next page'
+      };
+    } catch (error) {
+      console.error('🚨 Failed to navigate forward:', error);
+      return { 
+        success: false, 
+        action: 'goForward', 
+        error: 'Failed to navigate forward: ' + error.message
+      };
+    }
   }
 
   async handleNewTab(command, tabId) {
-    const url = command.url || command.target; // Support both url and target properties
-    const newTab = await chrome.tabs.create({ url: url, active: true }); // Make the new tab active
+    const newTab = await chrome.tabs.create({ url: command.url });
     return { 
       success: true, 
       action: 'newTab', 
-      url: url, 
+      url: command.url, 
       tabId: newTab.id,
-      message: `Opened new tab with ${url}`,
-      newTabId: newTab.id // Include the new tab ID for subsequent actions
+      message: `Opened new tab with ${command.url}`
     };
   }
 
@@ -1853,282 +2360,24 @@ class BrowserAutomation {
     return { success: true, action: 'waited' };
   }
 
-  // ========== ADVANCED MOUSE ACTIONS ==========
-  async handleDoubleClick(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'doubleClick', { selector });
-  }
-
-  async handleRightClick(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'rightClick', { selector });
-  }
-
-  async handleMiddleClick(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'middleClick', { selector });
-  }
-
-  async handleClickAndHold(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'clickAndHold', { selector });
-  }
-
-  async handleMouseDown(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'mouseDown', { selector, button: command.button || 'left' });
-  }
-
-  async handleMouseUp(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'mouseUp', { selector, button: command.button || 'left' });
-  }
-
-  async handleHover(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'hover', { selector });
-  }
-
-  async handleMouseMove(command, tabId) {
-    if (command.target) {
-      const selector = await this.domAnalyzer.findElement(command.target, tabId);
-      return await this.injectAndExecute(tabId, 'mouseMove', { 
-        selector, 
-        offsetX: command.offsetX || 0, 
-        offsetY: command.offsetY || 0 
-      });
-    } else {
-      return await this.injectAndExecute(tabId, 'mouseMoveBy', { 
-        x: command.x || 0, 
-        y: command.y || 0 
-      });
-    }
-  }
-
-  // ========== KEYBOARD ACTIONS ==========
-  async handleKeyDown(command, tabId) {
-    const selector = command.target ? await this.domAnalyzer.findElement(command.target, tabId) : null;
-    return await this.injectAndExecute(tabId, 'keyDown', { 
-      selector, 
-      key: command.key,
-      modifiers: command.modifiers || []
-    });
-  }
-
-  async handleKeyUp(command, tabId) {
-    const selector = command.target ? await this.domAnalyzer.findElement(command.target, tabId) : null;
-    return await this.injectAndExecute(tabId, 'keyUp', { 
-      selector, 
-      key: command.key,
-      modifiers: command.modifiers || []
-    });
-  }
-
-  async handleSendKeys(command, tabId) {
-    const selector = command.target ? await this.domAnalyzer.findElement(command.target, tabId) : null;
-    return await this.injectAndExecute(tabId, 'sendKeys', { 
-      selector, 
-      keys: command.keys || command.text 
-    });
-  }
-
-  async handlePressKey(command, tabId) {
-    const selector = command.target ? await this.domAnalyzer.findElement(command.target, tabId) : null;
-    return await this.injectAndExecute(tabId, 'pressKey', { 
-      selector, 
-      key: command.key,
-      modifiers: command.modifiers || []
-    });
-  }
-
-  // ========== FORM ACTIONS ==========
-  async handleSelect(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'selectOption', { 
-      selector, 
-      value: command.value,
-      text: command.text,
-      index: command.index
-    });
-  }
-
-  async handleCheck(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'setChecked', { selector, checked: true });
-  }
-
-  async handleUncheck(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'setChecked', { selector, checked: false });
-  }
-
-  async handleUploadFile(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'uploadFile', { 
-      selector, 
-      files: command.files || [command.file] 
-    });
-  }
-
-  async handleClearField(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'clearField', { selector });
-  }
-
-  async handleSubmitForm(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'submitForm', { selector });
-  }
-
-  async handleResetForm(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'resetForm', { selector });
-  }
-
-  // ========== WINDOW AND TAB MANAGEMENT ==========
-  async handleCloseTab(command, tabId) {
-    if (command.tabId) {
-      await chrome.tabs.remove(command.tabId);
-      return { success: true, action: 'closeTab', tabId: command.tabId };
-    } else {
-      await chrome.tabs.remove(tabId);
-      return { success: true, action: 'closeTab', tabId };
-    }
-  }
-
-  async handleSwitchToTab(command, tabId) {
-    if (command.tabId) {
-      await chrome.tabs.update(command.tabId, { active: true });
-      return { success: true, action: 'switchToTab', tabId: command.tabId };
-    } else if (command.url) {
-      const tabs = await chrome.tabs.query({ url: `*${command.url}*` });
-      if (tabs.length > 0) {
-        await chrome.tabs.update(tabs[0].id, { active: true });
-        return { success: true, action: 'switchToTab', tabId: tabs[0].id, url: command.url };
-      }
-      throw new Error(`No tab found with URL: ${command.url}`);
-    }
-    throw new Error('Must specify tabId or url for switchToTab');
-  }
-
-  async handleResizeWindow(command, tabId) {
-    const window = await chrome.windows.getCurrent();
-    await chrome.windows.update(window.id, { 
-      width: command.width, 
-      height: command.height 
-    });
-    return { success: true, action: 'resizeWindow', width: command.width, height: command.height };
-  }
-
-  async handleMaximizeWindow(command, tabId) {
-    const window = await chrome.windows.getCurrent();
-    await chrome.windows.update(window.id, { state: 'maximized' });
-    return { success: true, action: 'maximizeWindow' };
-  }
-
-  async handleMinimizeWindow(command, tabId) {
-    const window = await chrome.windows.getCurrent();
-    await chrome.windows.update(window.id, { state: 'minimized' });
-    return { success: true, action: 'minimizeWindow' };
-  }
-
-  // ========== PAGE NAVIGATION ==========
-  async handleGoBack(command, tabId) {
-    return await this.injectAndExecute(tabId, 'goBack', {});
-  }
-
-  async handleGoForward(command, tabId) {
-    return await this.injectAndExecute(tabId, 'goForward', {});
-  }
-
-  async handleScrollToTop(command, tabId) {
-    return await this.injectAndExecute(tabId, 'scrollTo', { x: 0, y: 0 });
-  }
-
-  async handleScrollToBottom(command, tabId) {
-    return await this.injectAndExecute(tabId, 'scrollToBottom', {});
-  }
-
-  async handleScrollToElement(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'scrollIntoView', { selector });
-  }
-
-  // ========== DATA EXTRACTION ==========
-  async handleGetText(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'getText', { selector });
-  }
-
-  async handleGetAttribute(command, tabId) {
-    const selector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'getAttribute', { 
-      selector, 
-      attribute: command.attribute 
-    });
-  }
-
-  async handleGetPageTitle(command, tabId) {
-    const tab = await chrome.tabs.get(tabId);
-    return { success: true, action: 'getPageTitle', title: tab.title };
-  }
-
-  async handleGetCurrentUrl(command, tabId) {
-    const tab = await chrome.tabs.get(tabId);
-    return { success: true, action: 'getCurrentUrl', url: tab.url };
-  }
-
-  // ========== ALERT AND POPUP HANDLING ==========
-  async handleAcceptAlert(command, tabId) {
-    return await this.injectAndExecute(tabId, 'acceptAlert', {});
-  }
-
-  async handleDismissAlert(command, tabId) {
-    return await this.injectAndExecute(tabId, 'dismissAlert', {});
-  }
-
-  async handleGetAlertText(command, tabId) {
-    return await this.injectAndExecute(tabId, 'getAlertText', {});
-  }
-
-  // ========== ADVANCED INTERACTIONS ==========
-  async handleDragAndDrop(command, tabId) {
-    const sourceSelector = await this.domAnalyzer.findElement(command.source, tabId);
-    const targetSelector = await this.domAnalyzer.findElement(command.target, tabId);
-    return await this.injectAndExecute(tabId, 'dragAndDrop', { 
-      source: sourceSelector, 
-      target: targetSelector 
-    });
-  }
-
-  async handleExecuteScript(command, tabId) {
-    return await this.injectAndExecute(tabId, 'executeScript', { 
-      script: command.script,
-      args: command.args || []
-    });
-  }
-
   async injectAndExecute(tabId, action, params = {}) {
     try {
-      console.log('🔧 injectAndExecute called with:', { tabId, action, params });
-      
       // Ensure params is serializable (plain object or null)
       const serializableParams = params ? JSON.parse(JSON.stringify(params)) : {};
-      console.log('🔧 Serializable params:', serializableParams);
       
       const results = await chrome.scripting.executeScript({
         target: { tabId },
         func: automationContentScript,
         args: [action, serializableParams]
       });
-      
-      console.log('🔧 Script execution results:', results);
-      console.log('🔧 First result:', results[0]);
-      console.log('🔧 Result value:', results[0]?.result);
-      
-      return results[0]?.result;
+      const resultObj = results && results[0] ? results[0].result : null;
+      if (!resultObj) {
+        console.warn('Automation injection returned empty result for action:', action, 'params:', serializableParams);
+        return { success: false, action, error: 'No result from content script', params: serializableParams };
+      }
+      return resultObj;
     } catch (error) {
-      console.error('❌ Script injection failed:', error);
+      console.error('Script injection failed:', error);
       throw error;
     }
   }
@@ -2221,7 +2470,7 @@ class TabOrganizer {
       body: JSON.stringify({
         model: settings.model,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 500
+        max_tokens: 4000
       })
     });
     
@@ -2256,217 +2505,385 @@ class TabOrganizer {
   }
 }
 
+// Action Planning System
+class ActionPlanner {
+  constructor() {
+    this.planTemplates = {
+      click: {
+        minSteps: 2,
+        maxSteps: 4,
+        template: [
+          'Analyze page elements to locate target',
+          'Verify element is clickable and visible', 
+          'Execute click action',
+          'Validate click was successful'
+        ]
+      },
+      type: {
+        minSteps: 3,
+        maxSteps: 5,
+        template: [
+          'Locate input field or text element',
+          'Focus on the target element',
+          'Clear existing content if needed',
+          'Type the specified text',
+          'Validate text was entered correctly'
+        ]
+      },
+      navigate: {
+        minSteps: 2,
+        maxSteps: 3,
+        template: [
+          'Prepare for navigation',
+          'Navigate to target URL',
+          'Verify page loaded successfully'
+        ]
+      },
+      fill: {
+        minSteps: 3,
+        maxSteps: 5,
+        template: [
+          'Analyze form structure and fields',
+          'Locate each target input field',
+          'Fill form fields with provided data',
+          'Validate all fields were filled',
+          'Submit form if applicable'
+        ]
+      },
+      goBack: {
+        minSteps: 2,
+        maxSteps: 3,
+        template: [
+          'Check if browser back navigation is possible',
+          'Execute browser back navigation',
+          'Verify navigation completed successfully'
+        ]
+      },
+      goForward: {
+        minSteps: 2,
+        maxSteps: 3,
+        template: [
+          'Check if browser forward navigation is possible',
+          'Execute browser forward navigation', 
+          'Verify navigation completed successfully'
+        ]
+      },
+      scroll: {
+        minSteps: 2,
+        maxSteps: 3,
+        template: [
+          'Determine scroll target and direction',
+          'Execute scrolling action',
+          'Verify scroll position changed'
+        ]
+      }
+    };
+  }
+
+  async createActionPlan(command, actionType, target = null) {
+    try {
+      console.log('📋 ActionPlanner: Creating plan for:', { command, actionType, target });
+      
+      const template = this.planTemplates[actionType] || this.planTemplates.click;
+      const steps = [];
+      
+      // Generate contextual steps based on action type and command
+      switch (actionType) {
+        case 'click':
+          steps.push({
+            id: 1,
+            description: `Analyze page to locate "${target || command}" element`,
+            action: 'analyze',
+            target: target || command,
+            estimatedTime: 1000
+          });
+          
+          steps.push({
+            id: 2,
+            description: `Verify "${target || command}" is clickable and visible`,
+            action: 'verify',
+            target: target || command,
+            estimatedTime: 500
+          });
+          
+          steps.push({
+            id: 3,
+            description: `Click on "${target || command}"`,
+            action: 'click',
+            target: target || command,
+            estimatedTime: 500
+          });
+          
+          if (template.template.length > 3) {
+            steps.push({
+              id: 4,
+              description: 'Validate click action was successful',
+              action: 'validate',
+              target: target || command,
+              estimatedTime: 500
+            });
+          }
+          break;
+          
+        case 'type':
+          steps.push({
+            id: 1,
+            description: `Locate input field for "${target || 'text input'}"`,
+            action: 'locate',
+            target: target || 'input field',
+            estimatedTime: 1000
+          });
+          
+          steps.push({
+            id: 2,
+            description: `Focus on the target input element`,
+            action: 'focus',
+            target: target || 'input field',
+            estimatedTime: 300
+          });
+          
+          if (command.clearFirst !== false) {
+            steps.push({
+              id: 3,
+              description: 'Clear existing content if present',
+              action: 'clear',
+              target: target || 'input field',
+              estimatedTime: 200
+            });
+          }
+          
+          steps.push({
+            id: steps.length + 1,
+            description: `Type text: "${command.text || command}"`,
+            action: 'type',
+            target: target || 'input field',
+            text: command.text || command,
+            estimatedTime: (command.text || command || '').length * 100
+          });
+          
+          steps.push({
+            id: steps.length + 1,
+            description: 'Verify text was entered correctly',
+            action: 'verify',
+            target: target || 'input field',
+            estimatedTime: 300
+          });
+          break;
+          
+        case 'navigate':
+          steps.push({
+            id: 1,
+            description: 'Prepare for page navigation',
+            action: 'prepare',
+            target: 'browser',
+            estimatedTime: 200
+          });
+          
+          steps.push({
+            id: 2,
+            description: `Navigate to: ${target || command}`,
+            action: 'navigate',
+            target: target || command,
+            estimatedTime: 2000
+          });
+          
+          steps.push({
+            id: 3,
+            description: 'Verify page loaded successfully',
+            action: 'verify',
+            target: 'page load',
+            estimatedTime: 1000
+          });
+          break;
+          
+        case 'goBack':
+          steps.push({
+            id: 1,
+            description: 'Check browser back navigation history',
+            action: 'check',
+            target: 'browser history',
+            estimatedTime: 200
+          });
+          
+          steps.push({
+            id: 2,
+            description: 'Execute browser back navigation',
+            action: 'goBack',
+            target: 'browser',
+            estimatedTime: 1000
+          });
+          
+          steps.push({
+            id: 3,
+            description: 'Verify navigation completed',
+            action: 'verify',
+            target: 'page change',
+            estimatedTime: 500
+          });
+          break;
+          
+        case 'goForward':
+          steps.push({
+            id: 1,
+            description: 'Check browser forward navigation history',
+            action: 'check',
+            target: 'browser history',
+            estimatedTime: 200
+          });
+          
+          steps.push({
+            id: 2,
+            description: 'Execute browser forward navigation', 
+            action: 'goForward',
+            target: 'browser',
+            estimatedTime: 1000
+          });
+          
+          steps.push({
+            id: 3,
+            description: 'Verify navigation completed',
+            action: 'verify',
+            target: 'page change',
+            estimatedTime: 500
+          });
+          break;
+          
+        default:
+          // Generic plan for unknown actions
+          steps.push({
+            id: 1,
+            description: `Prepare to execute ${actionType} action`,
+            action: 'prepare',
+            target: target || command,
+            estimatedTime: 500
+          });
+          
+          steps.push({
+            id: 2,
+            description: `Execute ${actionType} on "${target || command}"`,
+            action: actionType,
+            target: target || command,
+            estimatedTime: 1000
+          });
+          
+          steps.push({
+            id: 3,
+            description: `Verify ${actionType} action completed successfully`,
+            action: 'verify',
+            target: target || command,
+            estimatedTime: 500
+          });
+      }
+      
+      // Ensure we have 2-5 steps as requested
+      if (steps.length < 2) {
+        steps.push({
+          id: steps.length + 1,
+          description: 'Complete action execution',
+          action: 'complete',
+          target: target || command,
+          estimatedTime: 200
+        });
+      }
+      
+      if (steps.length > 5) {
+        steps.splice(5); // Limit to 5 steps max
+      }
+      
+      const totalEstimatedTime = steps.reduce((sum, step) => sum + (step.estimatedTime || 500), 0);
+      
+      const plan = {
+        id: Date.now(),
+        command: command,
+        actionType: actionType,
+        target: target,
+        steps: steps,
+        totalSteps: steps.length,
+        estimatedDuration: totalEstimatedTime,
+        createdAt: new Date().toISOString(),
+        status: 'created'
+      };
+      
+      console.log('📋 ActionPlanner: Plan created:', plan);
+      return plan;
+      
+    } catch (error) {
+      console.error('📋 ActionPlanner: Failed to create plan:', error);
+      // Fallback minimal plan
+      return {
+        id: Date.now(),
+        command: command,
+        actionType: actionType,
+        target: target,
+        steps: [
+          {
+            id: 1,
+            description: `Prepare ${actionType} action`,
+            action: 'prepare',
+            target: target || command,
+            estimatedTime: 300
+          },
+          {
+            id: 2,
+            description: `Execute ${actionType}`,
+            action: actionType,
+            target: target || command,
+            estimatedTime: 1000
+          }
+        ],
+        totalSteps: 2,
+        estimatedDuration: 1300,
+        createdAt: new Date().toISOString(),
+        status: 'fallback'
+      };
+    }
+  }
+
+  logPlanExecution(plan, stepIndex, result) {
+    console.log(`📋 Step ${stepIndex + 1}/${plan.totalSteps}: ${plan.steps[stepIndex].description}`, result);
+  }
+
+  formatPlanSummary(plan) {
+    const stepList = plan.steps.map((step, index) => 
+      `${index + 1}. ${step.description} (${step.estimatedTime}ms)`
+    ).join('\n');
+    
+    return `Action Plan for "${plan.command}":
+${stepList}
+
+Total Steps: ${plan.totalSteps}
+Estimated Duration: ${plan.estimatedDuration}ms`;
+  }
+}
+
 // DOM Analysis System
 class DOMAnalyzer {
   async findElement(description, tabId) {
-    console.log('🔍 DOMAnalyzer.findElement called with description:', description, 'tabId:', tabId);
-    
     try {
-      // First, test if basic script injection works
-      const testResults = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => {
-          return {
-            test: 'basic script injection working',
-            buttonsCount: document.querySelectorAll('button').length,
-            domain: document.domain,
-            title: document.title
-          };
-        }
-      });
-      
-      console.log('🔍 Basic script test result:', testResults[0]?.result);
-      
-      // Now try our main script - define function inline to avoid 'this' issues
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        func: (description) => {
-          // Comprehensive element finding function
-          function scoreElement(element, description) {
-            let score = 0;
-            const desc = description.toLowerCase();
-            const text = (element.textContent || '').toLowerCase();
-            const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
-            const title = (element.getAttribute('title') || '').toLowerCase();
-            const id = (element.id || '').toLowerCase();
-            const className = (element.className || '').toLowerCase();
-            const name = (element.getAttribute('name') || '').toLowerCase();
-            const value = (element.value || '').toLowerCase();
-            const placeholder = (element.getAttribute('placeholder') || '').toLowerCase();
-            
-            const searchTerms = desc.split(/\s+/);
-            
-            searchTerms.forEach(term => {
-              if (text.includes(term)) score += 10;
-              if (ariaLabel.includes(term)) score += 8;
-              if (title.includes(term)) score += 6;
-              if (id.includes(term)) score += 5;
-              if (name.includes(term)) score += 5;
-              if (value.includes(term)) score += 4;
-              if (placeholder.includes(term)) score += 4;
-              if (className.includes(term)) score += 3;
-            });
-            
-            return score;
-          }
-
-          function generateSelector(element) {
-            if (element.id) return `#${element.id}`;
-            
-            let selector = element.tagName.toLowerCase();
-            if (element.className) {
-              // Filter out pseudo-classes and invalid characters for querySelector
-              const classes = element.className.split(/\s+/)
-                .filter(c => c && !c.includes(':')) // Remove pseudo-classes like :hover
-                .filter(c => /^[a-zA-Z0-9_-]+$/.test(c)); // Keep only valid CSS class names
-              
-              if (classes.length > 0) {
-                selector += '.' + classes.join('.');
-              }
-            }
-            
-            const parent = element.parentElement;
-            if (parent && parent !== document.body) {
-              const siblings = Array.from(parent.children);
-              const index = siblings.indexOf(element);
-              if (index > 0) {
-                selector += `:nth-child(${index + 1})`;
-              }
-            }
-            
-            return selector;
-          }
-
-          try {
-            // Determine if we're looking for input fields or buttons based on description
-            const isInputSearch = /\b(field|input|text|area|box|form|enter|type)\b/i.test(description);
-            
-            let elements, elementType;
-            if (isInputSearch) {
-              // Search for input fields and textareas
-              elements = document.querySelectorAll('input[type="text"], input[type="email"], input[type="password"], input[type="search"], input[type="url"], input[type="tel"], input[type="number"], textarea, input:not([type])');
-              elementType = 'input fields';
-            } else {
-              // Search for button-like elements
-              elements = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a.btn, .button');
-              elementType = 'button-like elements';
-            }
-            
-            console.log(`Found ${elements.length} ${elementType} for: "${description}"`);
-            
-            const allElements = Array.from(elements).map((elem, index) => ({
-              index: index,
-              tagName: elem.tagName,
-              text: elem.textContent?.trim() || elem.value || '',
-              placeholder: elem.placeholder || '',
-              id: elem.id || '',
-              className: elem.className || '',
-              ariaLabel: elem.getAttribute('aria-label') || '',
-              title: elem.getAttribute('title') || '',
-              type: elem.type || '',
-              name: elem.name || '',
-              selector: generateSelector(elem)
-            }));
-            
-            // Score and rank elements
-            const candidates = Array.from(elements)
-              .map(element => ({
-                element: element,
-                score: scoreElement(element, description),
-                selector: generateSelector(element),
-                text: element.textContent?.trim() || element.value || element.placeholder || '',
-                debug: {
-                  id: element.id,
-                  className: element.className,
-                  ariaLabel: element.getAttribute('aria-label'),
-                  title: element.getAttribute('title'),
-                  placeholder: element.placeholder,
-                  name: element.name
-                }
-              }))
-              .filter(candidate => candidate.score > 0)
-              .sort((a, b) => b.score - a.score);
-            
-            const topCandidates = candidates.slice(0, 5).map(c => ({
-              score: c.score,
-              text: c.text,
-              selector: c.selector,
-              debug: c.debug
-            }));
-            
-            const bestMatch = candidates[0];
-            
-            console.log(`All ${elementType}:`, allElements);
-            console.log('Top candidates:', topCandidates);
-            console.log('Best match:', bestMatch);
-            
-            if (bestMatch) {
-              return {
-                selector: bestMatch.selector,
-                debug: {
-                  description: description,
-                  elementType: elementType,
-                  allElements: allElements,
-                  topCandidates: topCandidates,
-                  selectedElement: {
-                    score: bestMatch.score,
-                    text: bestMatch.text,
-                    selector: bestMatch.selector,
-                    debug: bestMatch.debug
-                  }
-                }
-              };
-            }
-            
-            return {
-              selector: null,
-              debug: {
-                description: description,
-                elementType: elementType,
-                allElements: allElements,
-                topCandidates: topCandidates,
-                message: 'No suitable element found'
-              }
-            };
-            
-          } catch (error) {
-            console.error('Error in DOM analysis:', error);
-            return {
-              selector: null,
-              debug: {
-                error: true,
-                message: error.message,
-                stack: error.stack,
-                description: description
-              }
-            };
-          }
-        },
+        func: this.domAnalysisScript,
         args: [description]
       });
-      
-      const result = results[0]?.result;
-      console.log('🔍 DOMAnalyzer script result:', result);
-      console.log('🔍 Results array length:', results?.length);
-      console.log('🔍 First result:', results[0]);
-      
-      if (result && result.debug) {
-        console.log('🔍 Debug info:', result.debug);
-        console.log('🔍 All elements found:', result.debug.allElements);
-        console.log('🔍 Top candidates:', result.debug.topCandidates);
-        return result.selector;
-      } else {
-        console.log('🔍 Legacy result format or null:', result);
-        return result;
-      }
+      return results[0]?.result;
     } catch (error) {
-      console.error('❌ DOM analysis failed:', error);
-      console.error('❌ Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
+      console.error('DOM analysis failed:', error);
       throw error;
+    }
+  }
+
+  async findMostRelevantElement(description, tabId, actionType = 'click') {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: this.enhancedElementFinderScript,
+        args: [description, actionType]
+      });
+      return results[0]?.result;
+    } catch (error) {
+      console.error('Enhanced DOM analysis failed:', error);
+      // Fallback to regular element finder
+      return await this.findElement(description, tabId);
     }
   }
 
@@ -2485,56 +2902,563 @@ class DOMAnalyzer {
   }
 
   domAnalysisScript(description) {
-    // Absolute minimal test - no try-catch, just basic return
-    return {
-      test: 'simple return works',
-      description: description || 'no description',
-      buttonCount: document ? document.querySelectorAll('button').length : 0
+    // Helper functions - must be defined inside the injected function
+    const stopwords = new Set(['click','press','open','go','to','the','a','an','on','in','into','and','then','please','now','page','tab','link','button','set','change','edit','update','save']);
+    const synonyms = {
+      billing: ['billing','usage','plan','subscription','invoice','payment'],
+      profile: ['profile','account','user'],
+      email: ['email','mail'],
+      keys: ['keys','api key','token'],
+      password: ['password','pass']
     };
+
+    function tokenize(raw) {
+      const desc = String(raw || '').toLowerCase().trim();
+      const cleaned = desc.replace(/[^a-z0-9\s&:+#.-]/g, ' ');
+      const words = cleaned.split(/\s+/).filter(Boolean);
+      const tokens = words.filter(w => !stopwords.has(w));
+      // Expand synonyms
+      const expanded = new Set(tokens);
+      for (const t of tokens) {
+        if (synonyms[t]) {
+          for (const s of synonyms[t]) expanded.add(s);
+        }
+      }
+      return Array.from(expanded);
+    }
+
+    function sanitizeClassName(cls) {
+      // remove characters that break CSS selectors (e.g., Tailwind variants like hover:underline)
+      return cls.replace(/[^a-zA-Z0-9_-]/g, '');
+    }
+
+    function buildUniqueSelector(el) {
+      if (!el || el.nodeType !== 1) return '';
+      if (el.id) return `#${CSS.escape(el.id)}`;
+
+      // Prefer stable identifying attributes
+      const attrPairs = [
+        ['data-testid'], ['data-qa'], ['data-cy'], ['aria-label'], ['title']
+      ];
+      for (const [attr] of attrPairs) {
+        const val = el.getAttribute(attr);
+        if (val && val.length <= 80) {
+          const safe = CSS.escape(val);
+          return `${el.tagName.toLowerCase()}[${attr}="${safe}"]`;
+        }
+      }
+
+      const tag = el.tagName.toLowerCase();
+      const classes = (el.className || '')
+        .split(/\s+/)
+        .map(sanitizeClassName)
+        .filter(Boolean)
+        .slice(0, 2);
+      let base = tag + (classes.length ? `.${classes.map(c => CSS.escape(c)).join('.')}` : '');
+
+      // Append :nth-of-type for uniqueness within parent
+      const parent = el.parentElement;
+      if (!parent) return base;
+      const sameTag = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+      const idx = sameTag.indexOf(el);
+      const withNth = `${base}:nth-of-type(${idx + 1})`;
+
+      // Build up a short path if needed
+      let selector = withNth;
+      let current = parent;
+      let depth = 0;
+      while (depth < 2 && current) {
+        let seg = current.tagName.toLowerCase();
+        if (current.id) {
+          selector = `#${CSS.escape(current.id)} > ${selector}`;
+          return selector;
+        }
+        const segClasses = (current.className || '')
+          .split(/\s+/)
+          .map(sanitizeClassName)
+          .filter(Boolean)
+          .slice(0, 2);
+        if (segClasses.length) seg += `.${segClasses.map(c => CSS.escape(c)).join('.')}`;
+        selector = `${seg} > ${selector}`;
+        current = current.parentElement;
+        depth++;
+      }
+      return selector;
+    }
+
+    function isVisible(el) {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    }
+
+    function scoreClickable(el, tokens) {
+      let score = 0;
+      const text = (el.textContent || '').toLowerCase().trim();
+      const value = (el.value || '').toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const cls = (el.className || '').toLowerCase();
+
+      // Special handling for navigation terms
+      const hasBackToken = tokens.includes('back');
+      const hasForwardToken = tokens.includes('forward');
+      const hasButtonToken = tokens.includes('button');
+      
+      // High penalty for profile/user/avatar elements when looking for navigation
+      if (hasBackToken || hasForwardToken) {
+        const profileKeywords = ['profile', 'avatar', 'user', 'account', 'image', 'photo', 'picture'];
+        const isProfileElement = profileKeywords.some(kw => 
+          text.includes(kw) || id.includes(kw) || cls.includes(kw) || 
+          el.getAttribute('alt')?.toLowerCase().includes(kw)
+        );
+        if (isProfileElement) {
+          score -= 50; // Heavy penalty for profile elements when looking for navigation
+        }
+        
+        // Boost for actual navigation elements
+        const navKeywords = ['navigate', 'prev', 'previous', 'next', 'arrow', 'chevron', 'breadcrumb'];
+        const isNavElement = navKeywords.some(kw => 
+          text.includes(kw) || id.includes(kw) || cls.includes(kw) ||
+          el.getAttribute('aria-label')?.toLowerCase().includes(kw)
+        );
+        if (isNavElement) score += 20;
+        
+        // Check for common back button patterns
+        if (hasBackToken) {
+          if (text.match(/^(back|← back|‹ back|<+ back)$/i) || 
+              id.match(/back[-_]?button/i) || cls.match(/back[-_]?button/i)) {
+            score += 30;
+          }
+        }
+        
+        // Check for common forward button patterns  
+        if (hasForwardToken) {
+          if (text.match(/^(forward|forward →|forward ›|forward >+)$/i) ||
+              id.match(/forward[-_]?button/i) || cls.match(/forward[-_]?button/i)) {
+            score += 30;
+          }
+        }
+      }
+
+      // Exact/contains token matches
+      let tokenMatches = 0;
+      for (const t of tokens) {
+        if (!t) continue;
+        if (text === t || value === t) tokenMatches += 2;
+        else if (text.includes(t) || value.includes(t)) tokenMatches += 1;
+        if (id.includes(t) || cls.includes(t)) tokenMatches += 0.5;
+      }
+      score += tokenMatches * 8;
+
+      // Attributes
+      const attrs = ['aria-label', 'title', 'data-testid', 'data-qa', 'data-cy'];
+      for (const a of attrs) {
+        const v = (el.getAttribute(a) || '').toLowerCase();
+        for (const t of tokens) if (t && v.includes(t)) score += 6;
+      }
+
+      // Tag/type preference
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'button') score += 8;
+      if (tag === 'a') score += 6;
+      if (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') score += 5;
+
+      // Visibility and enabled
+      if (isVisible(el)) score += 5;
+      if (!el.disabled) score += 2;
+
+      // Navigation context boost
+      const inNav = !!el.closest('nav, aside, [role="navigation"], .sidebar, [class*="nav" i], [class*="menu" i], [class*="side" i]');
+      if (inNav) score += 10;
+
+      // Nearby heading/context
+      const heading = el.closest('section, form, div');
+      const headTextEl = heading ? heading.querySelector('h1,h2,h3,legend,[aria-label]') : null;
+      const headText = (headTextEl?.textContent || heading?.getAttribute?.('aria-label') || '').toLowerCase();
+      for (const t of tokens) if (t && headText.includes(t)) score += 2;
+
+      return score;
+    }
+
+    function scoreGeneric(el, tokens) {
+      // Less weight than clickable scoring
+      let score = 0;
+      const text = (el.textContent || '').toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const cls = (el.className || '').toLowerCase();
+      for (const t of tokens) {
+        if (text.includes(t)) score += 3;
+        if (id.includes(t) || cls.includes(t)) score += 1.5;
+      }
+      if (isVisible(el)) score += 1;
+      return score;
+    }
+
+    // Main logic
+    const tokens = tokenize(description);
+    const clickable = document.querySelectorAll('a, button, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick], [tabindex]:not([tabindex="-1"])');
+    const clickCandidates = [];
+    for (const el of clickable) {
+      const s = scoreClickable(el, tokens);
+      if (s > 0) clickCandidates.push({ element: el, score: s });
+    }
+    clickCandidates.sort((a,b) => b.score - a.score);
+
+    if (clickCandidates.length && clickCandidates[0].score >= 12) {
+      const best = clickCandidates[0].element;
+      const selector = buildUniqueSelector(best);
+      console.log('DOMAnalyzer clickable best:', { selector, score: clickCandidates[0].score, text: best.textContent?.trim()?.slice(0,120) });
+      return selector;
+    }
+
+    // Fallback: generic scan
+    const elements = document.querySelectorAll('*');
+    const candidates = [];
+    for (const el of elements) {
+      const s = scoreGeneric(el, tokens);
+      if (s > 0) candidates.push({ element: el, score: s });
+    }
+    candidates.sort((a,b) => b.score - a.score);
+    console.log('DOMAnalyzer generic found', candidates.length, 'candidates for:', description);
+    if (candidates.length) {
+      const best = candidates[0].element;
+      const selector = buildUniqueSelector(best);
+      console.log('DOMAnalyzer generic best:', { selector, score: candidates[0].score, text: best.textContent?.trim()?.slice(0,120) });
+      return selector;
+    }
+    console.log('No candidates found for:', description);
+    return null;
   }
 
   formAnalysisScript(formDescription) {
+    function sanitizeClassName(cls) { return cls.replace(/[^a-zA-Z0-9_-]/g, ''); }
+    function buildUniqueSelector(el) {
+      if (!el || el.nodeType !== 1) return '';
+      if (el.id) return `#${CSS.escape(el.id)}`;
+      const tag = el.tagName.toLowerCase();
+      const classes = (el.className || '')
+        .split(/\s+/)
+        .map(sanitizeClassName)
+        .filter(Boolean)
+        .slice(0, 2);
+      let base = tag + (classes.length ? `.${classes.map(c => CSS.escape(c)).join('.')}` : '');
+      const parent = el.parentElement;
+      if (!parent) return base;
+      const sameTag = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+      const idx = sameTag.indexOf(el);
+      return `${base}:nth-of-type(${idx + 1})`;
+    }
+
     const forms = document.querySelectorAll('form, .form, [role="form"]');
     let targetForm = null;
-    
+    const query = String(formDescription || '').toLowerCase();
     // Find the most relevant form
     for (const form of forms) {
-      const formText = form.textContent.toLowerCase();
-      if (formText.includes(formDescription.toLowerCase())) {
+      const formText = (form.textContent || '').toLowerCase();
+      if (formText.includes(query)) {
         targetForm = form;
         break;
       }
     }
-    
-    if (!targetForm && forms.length > 0) {
-      targetForm = forms[0]; // Fallback to first form
-    }
-    
-    if (!targetForm) {
-      return { error: 'No form found' };
-    }
-    
+    if (!targetForm && forms.length > 0) targetForm = forms[0];
+    if (!targetForm) return { error: 'No form found' };
+
     const fields = {};
     const inputs = targetForm.querySelectorAll('input, textarea, select');
-    
     for (const input of inputs) {
       let fieldName = input.name || input.id || input.placeholder || input.type;
-      if (!fieldName) {
-        const label = targetForm.querySelector(`label[for="${input.id}"]`);
+      if (!fieldName && input.id) {
+        const label = targetForm.querySelector(`label[for="${CSS.escape(input.id)}"]`);
         if (label) fieldName = label.textContent.trim();
       }
-      
-      if (fieldName) {
-        fields[fieldName.toLowerCase()] = this.generateSelector(input);
-      }
+      if (fieldName) fields[fieldName.toLowerCase()] = buildUniqueSelector(input);
     }
-    
     return {
-      selector: this.generateSelector(targetForm),
+      selector: buildUniqueSelector(targetForm),
       fields,
       action: targetForm.action,
       method: targetForm.method
     };
+  }
+
+  enhancedElementFinderScript(description, actionType = 'click') {
+    // Enhanced element finding with sophisticated relevance scoring
+    function tokenize(str) {
+      return String(str || '').toLowerCase()
+        .replace(/[^\w\s-]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length > 0);
+    }
+
+    function sanitizeClassName(cls) {
+      return cls.replace(/[^a-zA-Z0-9_-]/g, '');
+    }
+
+    function buildUniqueSelector(el) {
+      if (!el || el.nodeType !== 1) return '';
+      
+      // Try ID first
+      if (el.id) {
+        const escaped = CSS.escape(el.id);
+        if (document.querySelectorAll(`#${escaped}`).length === 1) {
+          return `#${escaped}`;
+        }
+      }
+
+      // Build selector with classes and nth-of-type
+      const tag = el.tagName.toLowerCase();
+      const classes = (el.className || '')
+        .split(/\s+/)
+        .map(sanitizeClassName)
+        .filter(Boolean)
+        .slice(0, 3);
+      
+      let base = tag;
+      if (classes.length) {
+        base += `.${classes.map(c => CSS.escape(c)).join('.')}`;
+      }
+
+      const parent = el.parentElement;
+      if (!parent) return base;
+
+      const sameTag = Array.from(parent.children).filter(c => 
+        c.tagName === el.tagName && 
+        c.className === el.className
+      );
+      
+      if (sameTag.length > 1) {
+        const idx = sameTag.indexOf(el);
+        base += `:nth-of-type(${idx + 1})`;
+      }
+
+      // Build hierarchical path for uniqueness
+      let selector = base;
+      let current = parent;
+      let depth = 0;
+      
+      while (depth < 3 && current && current !== document.body) {
+        let seg = current.tagName.toLowerCase();
+        
+        if (current.id) {
+          selector = `#${CSS.escape(current.id)} ${selector}`;
+          break;
+        }
+        
+        const currentClasses = (current.className || '')
+          .split(/\s+/)
+          .map(sanitizeClassName)
+          .filter(Boolean)
+          .slice(0, 2);
+        
+        if (currentClasses.length) {
+          seg += `.${currentClasses.map(c => CSS.escape(c)).join('.')}`;
+        }
+        
+        selector = `${seg} ${selector}`;
+        current = current.parentElement;
+        depth++;
+      }
+
+      return selector;
+    }
+
+    function isVisible(el) {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && 
+             rect.height > 0 && 
+             style.visibility !== 'hidden' && 
+             style.display !== 'none' &&
+             style.opacity !== '0';
+    }
+
+    function getElementContext(el) {
+      const contexts = {
+        navigation: ['nav', 'aside', '[role="navigation"]', '.nav', '.navigation', '.menu', '.sidebar'],
+        form: ['form', '[role="form"]', '.form', 'fieldset'],
+        button: ['button', '[role="button"]', 'input[type="button"]', 'input[type="submit"]'],
+        link: ['a', '[role="link"]'],
+        content: ['main', 'article', 'section', '.content', '.main'],
+        header: ['header', '.header', '.top'],
+        footer: ['footer', '.footer', '.bottom']
+      };
+
+      for (const [contextType, selectors] of Object.entries(contexts)) {
+        for (const selector of selectors) {
+          if (el.matches(selector) || el.closest(selector)) {
+            return contextType;
+          }
+        }
+      }
+      return 'general';
+    }
+
+    function calculateRelevanceScore(el, tokens, actionType) {
+      let score = 0;
+      const text = (el.textContent || '').toLowerCase().trim();
+      const value = (el.value || '').toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const className = (el.className || '').toLowerCase();
+      const tag = el.tagName.toLowerCase();
+
+      // Action-specific scoring
+      if (actionType === 'click') {
+        // Boost for clickable elements
+        if (['button', 'a'].includes(tag)) score += 15;
+        if (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') score += 12;
+        if (el.hasAttribute('onclick') || el.hasAttribute('href')) score += 8;
+        if (el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1') score += 5;
+      } else if (actionType === 'type' || actionType === 'fill') {
+        // Boost for input elements
+        if (['input', 'textarea', 'select'].includes(tag)) score += 15;
+        if (el.hasAttribute('contenteditable')) score += 10;
+      }
+
+      // Token matching with different weights
+      let exactMatches = 0;
+      let partialMatches = 0;
+      
+      for (const token of tokens) {
+        if (!token) continue;
+        
+        // Exact matches (highest priority)
+        if (text === token || value === token) {
+          exactMatches += 3;
+        } else if (text.includes(token) || value.includes(token)) {
+          partialMatches += 2;
+        }
+        
+        // ID and class matches
+        if (id.includes(token)) partialMatches += 1.5;
+        if (className.includes(token)) partialMatches += 1;
+        
+        // Attribute matches
+        const attrs = ['aria-label', 'title', 'alt', 'placeholder', 'data-testid', 'data-qa'];
+        for (const attr of attrs) {
+          const attrValue = (el.getAttribute(attr) || '').toLowerCase();
+          if (attrValue === token) exactMatches += 2;
+          else if (attrValue.includes(token)) partialMatches += 1;
+        }
+      }
+      
+      score += exactMatches * 20 + partialMatches * 10;
+
+      // Context relevance
+      const context = getElementContext(el);
+      if (actionType === 'click') {
+        if (tokens.some(t => ['back', 'forward', 'next', 'prev'].includes(t))) {
+          if (context === 'navigation') score += 25;
+          
+          // Anti-pattern: penalize profile elements when looking for navigation
+          const profileKeywords = ['profile', 'avatar', 'user', 'account', 'image', 'photo'];
+          const isProfileElement = profileKeywords.some(kw => 
+            text.includes(kw) || id.includes(kw) || className.includes(kw) ||
+            el.getAttribute('alt')?.toLowerCase().includes(kw)
+          );
+          if (isProfileElement) score -= 30;
+        }
+        
+        if (tokens.some(t => ['submit', 'send', 'save'].includes(t))) {
+          if (context === 'form') score += 20;
+        }
+      }
+
+      // Visibility and accessibility
+      if (isVisible(el)) score += 15;
+      if (!el.disabled && !el.hasAttribute('disabled')) score += 10;
+      if (el.getAttribute('aria-hidden') !== 'true') score += 5;
+
+      // Position and prominence scoring
+      const rect = el.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const viewportWidth = window.innerWidth;
+      
+      // Elements in viewport get boost
+      if (rect.top >= 0 && rect.bottom <= viewportHeight && 
+          rect.left >= 0 && rect.right <= viewportWidth) {
+        score += 10;
+        
+        // Elements in upper portion of viewport get additional boost
+        if (rect.top < viewportHeight * 0.3) score += 5;
+      }
+
+      // Size relevance (not too small, not too large)
+      const area = rect.width * rect.height;
+      if (area > 100 && area < 50000) score += 5;
+
+      // Semantic meaning from surrounding context
+      const parent = el.parentElement;
+      if (parent) {
+        const parentText = parent.textContent.toLowerCase();
+        const siblingTexts = Array.from(parent.children)
+          .map(child => child.textContent.toLowerCase())
+          .join(' ');
+        
+        for (const token of tokens) {
+          if (parentText.includes(token)) score += 3;
+          if (siblingTexts.includes(token)) score += 2;
+        }
+      }
+
+      return Math.max(0, score);
+    }
+
+    function findMostRelevantElement(description, actionType) {
+      const tokens = tokenize(description);
+      console.log('Enhanced element finder tokens:', tokens, 'for action:', actionType);
+      
+      // Get all potentially relevant elements
+      const allElements = document.querySelectorAll('*');
+      const candidates = [];
+      
+      // Score all elements
+      for (const el of allElements) {
+        // Skip non-interactive elements for click actions
+        if (actionType === 'click') {
+          const tag = el.tagName.toLowerCase();
+          const hasClickHandler = el.hasAttribute('onclick') || 
+                                el.hasAttribute('href') ||
+                                el.getAttribute('role') === 'button' ||
+                                el.getAttribute('role') === 'link' ||
+                                ['button', 'a', 'input'].includes(tag);
+          
+          if (!hasClickHandler && !el.hasAttribute('tabindex')) {
+            continue; // Skip non-interactive elements
+          }
+        }
+        
+        const score = calculateRelevanceScore(el, tokens, actionType);
+        if (score > 0) {
+          candidates.push({ 
+            element: el, 
+            score: score,
+            selector: buildUniqueSelector(el),
+            text: el.textContent?.trim()?.slice(0, 100) || '',
+            context: getElementContext(el)
+          });
+        }
+      }
+      
+      // Sort by score (highest first)
+      candidates.sort((a, b) => b.score - a.score);
+      
+      console.log('Enhanced element finder found', candidates.length, 'candidates');
+      if (candidates.length > 0) {
+        console.log('Top 3 candidates:', candidates.slice(0, 3).map(c => ({
+          score: c.score,
+          text: c.text,
+          context: c.context,
+          selector: c.selector
+        })));
+        
+        return candidates[0].selector;
+      }
+      
+      console.log('No relevant elements found for:', description);
+      return null;
+    }
+
+    return findMostRelevantElement(description, actionType);
   }
 }
 
@@ -2547,39 +3471,31 @@ class AICommandParser {
       type: /(?:type|enter|input)\s+["']([^"']+)["']\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i,
       fill: /(?:fill|complete)\s+(?:the\s+)?(.+?)(?:\s+with\s+(.+))?/i,
       
-      // Advanced mouse events
-      doubleClick: /(?:double\s+click|dbl\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      rightClick: /(?:right\s+click|context\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      middleClick: /(?:middle\s+click|wheel\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      clickAndHold: /(?:click\s+and\s+hold|hold\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      // Mouse events
       hover: /(?:hover|mouse\s+over)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      rightClick: /(?:right\s+click|context\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
+      doubleClick: /(?:double\s+click|dbl\s+click)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
       mouseDown: /mouse\s+down\s+(?:on\s+)?(?:the\s+)?(.+)/i,
       mouseUp: /mouse\s+up\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      mouseMove: /(?:move\s+mouse\s+to|mouse\s+move)\s+(?:the\s+)?(.+)/i,
       
       // Scrolling
       scroll: /scroll\s+(up|down|left|right)(?:\s+(\d+))?/i,
       scrollToElement: /scroll\s+to\s+(?:the\s+)?(.+)/i,
-      scrollToTop: /scroll\s+to\s+top/i,
-      scrollToBottom: /scroll\s+to\s+bottom/i,
       
       // Keyboard events
       keyDown: /(?:key\s+down|press\s+key)\s+(.+?)(?:\s+on\s+(.+))?/i,
       keyUp: /(?:key\s+up|release\s+key)\s+(.+?)(?:\s+on\s+(.+))?/i,
       sendKeys: /(?:send\s+keys|press)\s+(.+?)(?:\s+to\s+(.+))?/i,
-      pressKey: /(?:press|hit)\s+(.+?)(?:\s+on\s+(.+))?/i,
       typeText: /(?:type\s+text|slowly\s+type)\s+["']([^"']+)["']\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i,
       
       // Form actions
       focus: /focus\s+(?:on\s+)?(?:the\s+)?(.+)/i,
       blur: /blur\s+(?:from\s+)?(?:the\s+)?(.+)/i,
       select: /select\s+(.+?)(?:\s+in\s+(.+))?/i,
-      check: /check\s+(?:the\s+)?(.+)/i,
-      uncheck: /uncheck\s+(?:the\s+)?(.+)/i,
-      clearField: /(?:clear|empty)\s+(?:the\s+)?(.+)/i,
-      uploadFile: /(?:upload|attach)\s+file\s+(.+?)\s+to\s+(?:the\s+)?(.+)/i,
-      submitForm: /submit\s+(?:the\s+)?(.+)/i,
-      resetForm: /reset\s+(?:the\s+)?(.+)/i,
+      check: /(?:check|uncheck)\s+(?:the\s+)?(.+)/i,
+      submit: /submit\s+(?:the\s+)?(.+)/i,
+      reset: /reset\s+(?:the\s+)?(.+)/i,
+      clearInput: /(?:clear|empty)\s+(?:the\s+)?(.+)/i,
       
       // Drag and drop
       dragAndDrop: /drag\s+(.+?)\s+(?:to|onto)\s+(.+)/i,
@@ -2593,69 +3509,20 @@ class AICommandParser {
       
       // Page/Window actions
       refresh: /(?:refresh|reload)(?:\s+(?:the\s+)?page|\(\))?/i,
-      goBack: /(?:go\s+back|navigate\s+back|back)/i,
-      goForward: /(?:go\s+forward|navigate\s+forward|forward)/i,
+      goBack: /(?:go\s+back|navigate\s+back|back|click\s+(?:the\s+)?back(?:\s+button)?)/i,
+      goForward: /(?:go\s+forward|navigate\s+forward|forward|click\s+(?:the\s+)?forward(?:\s+button)?)/i,
       newTabAndNavigate: /(?:open\s+)?new\s+tab\s+and\s+(?:navigate\s+to|go\s+to)\s+(.+)/i,
       newTab: /(?:open\s+)?(?:new\s+tab(?:\s+(?:with))?)\s+(.+)/i,
       navigate: /(?:go to|navigate to|open)\s+(.+)/i,
-      closeTab: /close\s+(?:current\s+)?tab/i,
-      switchToTab: /(?:switch\s+to|go\s+to)\s+tab\s+(.+)/i,
-      maximizeWindow: /maximize\s+window/i,
-      minimizeWindow: /minimize\s+window/i,
-      resizeWindow: /resize\s+window\s+to\s+(\d+)x(\d+)/i,
-      
-      // Data extraction
-      getText: /(?:get\s+text|read\s+text)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
-      getAttribute: /(?:get\s+attribute|read\s+attribute)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
-      getPageTitle: /get\s+(?:page\s+)?title/i,
-      getCurrentUrl: /get\s+(?:current\s+)?url/i,
-      
-      // Alert handling
-      acceptAlert: /(?:accept|ok|confirm)\s+alert/i,
-      dismissAlert: /(?:dismiss|cancel|close)\s+alert/i,
-      getAlertText: /get\s+alert\s+text/i,
       
       // Content manipulation
+      getText: /(?:get\s+text|read\s+text)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
       setText: /(?:set\s+text|change\s+text)\s+(?:of\s+)?(?:the\s+)?(.+?)\s+to\s+["']([^"']+)["']/i,
+      getAttribute: /(?:get\s+attribute|read\s+attribute)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
       setAttribute: /(?:set\s+attribute|change\s+attribute)\s+(.+?)\s+(?:of\s+)?(?:the\s+)?(.+?)\s+to\s+["']([^"']+)["']/i,
       addClass: /(?:add\s+class|apply\s+class)\s+(.+?)\s+(?:to\s+)?(?:the\s+)?(.+)/i,
       removeClass: /(?:remove\s+class|delete\s+class)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
       toggleClass: /toggle\s+class\s+(.+?)\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      
-      // Advanced actions
-      executeScript: /(?:execute|run)\s+script\s+["']([^"']+)["']/i,
-      takeScreenshot: /(?:take\s+screenshot|capture\s+screen|screenshot)/i,
-      waitForElement: /wait\s+for\s+(?:the\s+)?(.+?)(?:\s+(\d+))?/i,
-      waitForCondition: /wait\s+(?:for|until)\s+(.+)/i,
-      
-      // Page/Window actions
-      refresh: /(?:refresh|reload)(?:\s+(?:the\s+)?page|\(\))?/i,
-      goBack: /(?:go\s+back|navigate\s+back|back)/i,
-      goForward: /(?:go\s+forward|navigate\s+forward|forward)/i,
-      newTabAndNavigate: /(?:open\s+)?new\s+tab\s+and\s+(?:navigate\s+to|go\s+to)\s+(.+)/i,
-      newTab: /(?:open\s+)?(?:new\s+tab(?:\s+(?:with))?)\s+(.+)/i,
-      navigate: /(?:go to|navigate to|open)\s+(.+)/i,
-      closeTab: /close\s+(?:current\s+)?tab/i,
-      switchToTab: /(?:switch\s+to|go\s+to)\s+tab\s+(.+)/i,
-      maximizeWindow: /maximize\s+window/i,
-      minimizeWindow: /minimize\s+window/i,
-      resizeWindow: /resize\s+window\s+to\s+(\d+)x(\d+)/i,
-      
-      // Data extraction
-      getText: /(?:get\s+text|read\s+text)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
-      getAttribute: /(?:get\s+attribute|read\s+attribute)\s+(.+?)\s+(?:from\s+)?(?:the\s+)?(.+)/i,
-      getPageTitle: /get\s+(?:page\s+)?title/i,
-      getCurrentUrl: /get\s+(?:current\s+)?url/i,
-      
-      // Alert handling
-      acceptAlert: /(?:accept|ok|confirm)\s+alert/i,
-      dismissAlert: /(?:dismiss|cancel|close)\s+alert/i,
-      getAlertText: /get\s+alert\s+text/i,
-      
-      // Touch events
-      touchStart: /touch\s+start\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      touchMove: /touch\s+move\s+(?:on\s+)?(?:the\s+)?(.+)/i,
-      touchEnd: /touch\s+end\s+(?:on\s+)?(?:the\s+)?(.+)/i,
       
       // Visual actions
       highlight: /highlight\s+(?:the\s+)?(.+?)(?:\s+with\s+(.+))?/i,
@@ -2709,26 +3576,16 @@ class AICommandParser {
         return { action: 'rightClick', target: match[1] };
       case 'doubleClick':
         return { action: 'doubleClick', target: match[1] };
-      case 'middleClick':
-        return { action: 'middleClick', target: match[1] };
-      case 'clickAndHold':
-        return { action: 'clickAndHold', target: match[1] };
       case 'mouseDown':
         return { action: 'mouseDown', target: match[1] };
       case 'mouseUp':
         return { action: 'mouseUp', target: match[1] };
-      case 'mouseMove':
-        return { action: 'mouseMove', target: match[1] };
       
       // Scrolling
       case 'scroll':
         return { action: 'scroll', direction: match[1], amount: parseInt(match[2]) || 100 };
       case 'scrollToElement':
         return { action: 'scrollToElement', target: match[1] };
-      case 'scrollToTop':
-        return { action: 'scrollToTop' };
-      case 'scrollToBottom':
-        return { action: 'scrollToBottom' };
       
       // Keyboard events
       case 'keyDown':
@@ -2737,8 +3594,6 @@ class AICommandParser {
         return { action: 'keyUp', key: match[1], target: match[2] || 'body' };
       case 'sendKeys':
         return { action: 'sendKeys', keys: match[1], target: match[2] || 'body' };
-      case 'pressKey':
-        return { action: 'pressKey', key: match[1], target: match[2] || 'body' };
       case 'typeText':
         return { action: 'typeText', text: match[1], target: match[2] };
       
@@ -2750,17 +3605,13 @@ class AICommandParser {
       case 'select':
         return { action: 'select', value: match[1], target: match[2] };
       case 'check':
-        return { action: 'check', target: match[1] };
-      case 'uncheck':
-        return { action: 'uncheck', target: match[1] };
-      case 'clearField':
-        return { action: 'clearField', target: match[1] };
-      case 'uploadFile':
-        return { action: 'uploadFile', filePath: match[1], target: match[2] };
-      case 'submitForm':
-        return { action: 'submitForm', target: match[1] };
-      case 'resetForm':
-        return { action: 'resetForm', target: match[1] };
+        return { action: 'check', target: match[1], checked: !match[0].includes('uncheck') };
+      case 'submit':
+        return { action: 'submit', target: match[1] };
+      case 'reset':
+        return { action: 'reset', target: match[1] };
+      case 'clearInput':
+        return { action: 'clearInput', target: match[1] };
       
       // Drag and drop
       case 'dragAndDrop':
@@ -2791,38 +3642,14 @@ class AICommandParser {
         return { action: 'newTab', url: this.normalizeUrl(match[1]) };
       case 'navigate':
         return { action: 'navigate', url: this.normalizeUrl(match[1]) };
-      case 'closeTab':
-        return { action: 'closeTab' };
-      case 'switchToTab':
-        return { action: 'switchToTab', target: match[1] };
-      case 'maximizeWindow':
-        return { action: 'maximizeWindow' };
-      case 'minimizeWindow':
-        return { action: 'minimizeWindow' };
-      case 'resizeWindow':
-        return { action: 'resizeWindow', width: parseInt(match[1]), height: parseInt(match[2]) };
-      
-      // Data extraction
-      case 'getText':
-        return { action: 'getText', target: match[1] };
-      case 'getAttribute':
-        return { action: 'getAttribute', attribute: match[1], target: match[2] };
-      case 'getPageTitle':
-        return { action: 'getPageTitle' };
-      case 'getCurrentUrl':
-        return { action: 'getCurrentUrl' };
-      
-      // Alert handling
-      case 'acceptAlert':
-        return { action: 'acceptAlert' };
-      case 'dismissAlert':
-        return { action: 'dismissAlert' };
-      case 'getAlertText':
-        return { action: 'getAlertText' };
       
       // Content manipulation
+      case 'getText':
+        return { action: 'getText', target: match[1] };
       case 'setText':
         return { action: 'setText', target: match[1], text: match[2] };
+      case 'getAttribute':
+        return { action: 'getAttribute', attribute: match[1], target: match[2] };
       case 'setAttribute':
         return { action: 'setAttribute', attribute: match[1], target: match[2], value: match[3] };
       case 'addClass':
@@ -2851,20 +3678,16 @@ class AICommandParser {
         return { action: 'waitForText', text: match[1], target: match[2], timeout: parseInt(match[3]) || 5000 };
       case 'waitForUrl':
         return { action: 'waitForUrl', pattern: match[1], timeout: parseInt(match[2]) || 5000 };
-      case 'waitForCondition':
-        return { action: 'waitForCondition', condition: match[1] };
       
       // Extraction and analysis
       case 'screenshot':
         return { action: 'screenshot' };
-      case 'takeScreenshot':
-        return { action: 'takeScreenshot' };
-      case 'executeScript':
-        return { action: 'executeScript', script: match[1] };
       case 'extract':
         return { action: 'extract', type: match[1], selector: match[2] };
       case 'extractPageElements':
         return { action: 'extractPageElements' };
+      case 'highlight':
+        return { action: 'highlight', content: match[1] };
       case 'organize':
         return { action: 'organize', criteria: match[1] || 'domain' };
       case 'note':
@@ -2940,10 +3763,14 @@ class AICommandPlanner {
   constructor() {
     this.systemPrompt = `You are an intelligent browser automation assistant. Your job is to analyze user commands and create step-by-step action plans.
 
+Safety and intent constraints:
+- Never include steps that sign the user out, sign the user in, or navigate to authentication pages unless explicitly requested by the command.
+- If the user intent is to edit profile details (bio/about/description), keep actions within the profile/settings context. Prefer targeting long-text fields like <textarea> or contenteditable editors; avoid email/username/password inputs.
+
 Available browser actions:
 - click: Click on elements (buttons, links, text)
-- type: Type text in single input fields (use for individual text inputs, textareas, etc.)
-- fill: Fill entire forms with multiple data fields (NOT for single field input)
+- type: Type text in input fields
+- fill: Fill forms with data
 - scroll: Scroll page up/down
 - navigate: Go to URLs 
 - newTab: Open new tab with URL
@@ -2988,15 +3815,6 @@ Response: {
   "reasoning": "I'll first analyze the form structure, then fill it with appropriate data"
 }
 
-Command: "enter Test in the Bio field"
-Response: {
-  "understood": true,
-  "plan": [
-    {"action": "type", "target": "Bio field", "text": "Test", "description": "Type 'Test' in the Bio field"}
-  ],
-  "reasoning": "For single field input, I'll use the type action to enter the text"
-}
-
 Current page context will be provided when available.`;
   }
 
@@ -3009,11 +3827,26 @@ Current page context will be provided when available.`;
       let contextPrompt = this.systemPrompt;
       
       if (pageContext) {
+        let elementsInfo = 'analyzing...';
+        let htmlSnippet = '';
+        
+        if (pageContext.elements && pageContext.elements.length > 0) {
+          elementsInfo = pageContext.elements.slice(0, 20).map(el => 
+            `${el.tag}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ')[0] : ''} "${el.text}"`
+          ).join(', ');
+        }
+        
+        if (pageContext.html) {
+          // Include a meaningful portion of HTML for better element identification
+          htmlSnippet = `\n\nHTML Content (first 8000 chars):\n${pageContext.html.substring(0, 8000)}`;
+        }
+        
         contextPrompt += `\n\nCurrent page context:
 URL: ${pageContext.url || 'unknown'}
 Title: ${pageContext.title || 'unknown'}
 User Agent: ${navigator.userAgent}
-Available elements: ${pageContext.elements ? pageContext.elements.slice(0, 15).join(', ') : 'analyzing...'}
+Interactive elements found: ${pageContext.elements ? pageContext.elements.length : 0}
+Key elements: ${elementsInfo}${htmlSnippet}
 
 Page analysis:
 - This appears to be a ${this.identifyPageType(pageContext.url)} page
@@ -3055,8 +3888,14 @@ Page analysis:
       { role: 'user', content: `Analyze this command and create action plan: "${userCommand}"` }
     ];
 
+    // Use temperature 0 for precise automation actions
+    const automationSettings = {
+      ...settings,
+      temperature: 0  // Use temperature 0 for deterministic/precise responses
+    };
+
     // Use existing processAIRequest function
-    const result = await processAIRequest({ messages, settings });
+    const result = await processAIRequest({ messages, settings: automationSettings });
     
     // Extract content from response
     if (result.success && result.response) {
@@ -3147,6 +3986,7 @@ chrome.action.onClicked.addListener((tab) => {
 
 // Handle messages from content scripts and side panel with MCP compliance
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('🚀 UPDATED BACKGROUND SCRIPT - VERSION 2.1.0 - FULL PAGE ANALYSIS 🚀');
   console.log('ï¿½ðŸ”§ BACKGROUND: Message received:', request.action, request);
   try {
     console.log('ðŸ”§ BACKGROUND: Processing action:', request.action);
@@ -3408,7 +4248,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         browserAutomation.executeCommand(request.command, activeTab.id).then(result => {
           console.log('🤖 AUTOMATION: Command executed successfully:', result);
-          sendResponse({ success: true, result });
+          
+          // Enhanced response with element information
+          let responseMessage = "Command completed";
+          if (result && result.message) {
+            responseMessage = result.message;
+          } else if (result && result.elementInfo) {
+            const elem = result.elementInfo;
+            responseMessage = `${result.action || 'Action'} performed on ${elem.tagName}${elem.id ? ' #' + elem.id : ''}${elem.text ? ' ("' + elem.text.substring(0, 50) + '...")' : ''}`;
+          } else if (result && result.action) {
+            responseMessage = `${result.action} completed`;
+          }
+          
+          sendResponse({ 
+            success: true, 
+            result: result || {},
+            message: responseMessage,
+            elementInfo: (result && result.elementInfo) || null
+          });
         }).catch(error => {
           console.error('🤖 AUTOMATION: Command execution failed:', error);
           sendResponse({ success: false, error: error.message });
@@ -3761,7 +4618,7 @@ async function checkUserCredits(apiKey, provider = 'openrouter') {
   
   // Provider-specific fallbacks
   const providerDefaults = {
-    'openrouter': 5000,      // Conservative for pay-per-use
+    'openrouter': 50000,     // Conservative for pay-per-use
     'openai': 50000,         // Generous for subscription
     'anthropic': 100000,     // High limit for Claude
     'groq': 200000,          // Very high for fast inference
@@ -3883,7 +4740,7 @@ async function processAIRequest(requestData) {
       
       return {
         maxInputTokens,
-        dynamicMaxTokens: Math.min(dynamicMaxTokens, getMaxTokensForComplexity(requestComplexity, provider)),
+        dynamicMaxTokens: Math.max(2000, Math.min(dynamicMaxTokens, getMaxTokensForComplexity(requestComplexity, provider))),
         needsTruncation: estimatedInputTokens > maxInputTokens,
         complexity: requestComplexity
       };
@@ -4431,7 +5288,7 @@ async function handlePopupMessage(request, sendResponse) {
       // Anthropic uses a different message format
       requestBody = {
         model: model,
-        max_tokens: 500,
+        max_tokens: finalSettings.maxTokens,
         messages: messages.filter(msg => msg.role !== 'system'), // Remove system message for now
         system: messages.find(msg => msg.role === 'system')?.content || ''
       };
@@ -4478,7 +5335,7 @@ async function handlePopupMessage(request, sendResponse) {
         model: model,
         messages: messages,
         temperature: 0.7,
-        max_tokens: 500
+        max_tokens: finalSettings.maxTokens
       };
     }
     

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChromeAiAgent",
-  "version": "2.1.0",
-  "description": "AI agent with browser automation capabilities and support for multiple LLM providers - FULL PAGE ANALYSIS ENABLED",
+  "version": "2.2.0",
+  "description": "AI agent with browser automation capabilities and support for multiple LLM providers including OpenAI, Claude, Gemini, Groq, and more.",
   "permissions": [
     "storage",
     "sidePanel",

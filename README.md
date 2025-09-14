@@ -4,10 +4,12 @@
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
+![Version](https://img.shields.io/badge/Version-2.2.0-brightgreen)
 ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 ![Multi Provider](https://img.shields.io/badge/Multi-Provider-orange)
+![Automation](https://img.shields.io/badge/Browser-Automation-red)
 
-**The ultimate Chrome extension for AI-powered assistance with support for 10+ AI providers**
+**The ultimate Chrome extension for AI-powered assistance with advanced browser automation and support for 10+ AI providers**
 
 [🚀 Installation](#installation) • [✨ Features](#features) • [🔧 Setup](#setup) • [📖 Usage](#usage) • [🤝 Contributing](#contributing)
 
@@ -17,7 +19,7 @@
 
 ## 🌟 Overview
 
-ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants directly to your browser. With support for OpenAI, Claude, Gemini, OpenRouter, and many more providers, you can chat with AI while browsing any website, extract page context, and maintain conversation logs.
+ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants directly to your browser with advanced automation capabilities. With support for OpenAI, Claude, Gemini, OpenRouter, and many more providers, you can chat with AI while browsing any website, extract page context, maintain conversation logs, and automate complex browser interactions with intelligent action planning.
 
 ### 🎯 Why ChromeAI Agent?
 
@@ -27,6 +29,8 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 - 💾 **Conversation Logs**: Complete chat history with export
 - 🎨 **Markdown Support**: Rich text formatting in responses
 - 🔧 **Easy Setup**: Simple configuration and API key management
+- 🤖 **Advanced Automation**: Intelligent browser automation with action planning
+- 🎯 **Enhanced Precision**: Temperature 0 AI for consistent automation results
 
 ---
 
@@ -48,25 +52,63 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 - 💬 **Smart Chat Interface** - Clean, intuitive side panel
 - 🌐 **Page Context Awareness** - AI knows what page you're on
 - 📊 **Conversation Logging** - Complete chat history with search
-- 🤖 **Browser Automation** - 60+ automation actions for web interactions
-- 🎯 **Smart Element Detection** - AI-powered element finding and interaction
-- ⚡ **Multi-Action Commands** - Execute complex automation sequences
+- 🤖 **Advanced Browser Automation** - Intelligent automation with action planning
+- 🎯 **Enhanced Element Detection** - AI-powered element finding with temperature 0 precision
+- ⚡ **Multi-Step Action Plans** - Every automation creates detailed 2-5 step execution plans
 - 🎨 **Markdown Rendering** - Rich text formatting in responses
 - 🔄 **Model Switching** - Change providers/models on the fly
 - ⚙️ **Default Provider** - Set your preferred AI service
 - 📤 **Export Logs** - Download conversation history
 - 🆕 **New Chat** - Start fresh conversations easily
 
-### 🤖 **Browser Automation**
-- 🖱️ **Mouse Actions** - Click, double-click, right-click, drag & drop
-- ⌨️ **Keyboard Actions** - Type text, press keys, keyboard shortcuts
-- 📝 **Form Handling** - Fill forms, select options, upload files, submit
-- 🪟 **Window Management** - Open/close tabs, resize windows, navigate
-- 📜 **Page Navigation** - Scroll, refresh, go back/forward, wait for elements
-- 🔍 **Data Extraction** - Get page content, element text, attributes, URLs
-- 🎨 **Visual Actions** - Take screenshots, highlight elements, inject CSS
-- ⚠️ **Alert Handling** - Accept/dismiss alerts, handle popups
-- 🔧 **Advanced Actions** - Execute scripts, wait conditions, event listeners
+### 🤖 **Browser Automation System**
+
+#### 🚀 **Action Planning Engine**
+- **Intelligent Planning**: Every automation action generates 2-5 step execution plans
+- **Step-by-Step Execution**: Real-time progress tracking with detailed logging
+- **Temperature 0 Precision**: Deterministic AI responses for consistent automation
+- **Enhanced Element Targeting**: Sophisticated relevance scoring to find the right elements
+- **Anti-Pattern Detection**: Prevents common targeting errors (e.g., clicking avatars instead of navigation)
+
+#### 🖱️ **Mouse & Click Actions**
+- **Smart Clicking**: `click the login button`, `click submit`, `click the back button`
+- **Advanced Targeting**: AI finds elements by text, context, and semantic meaning
+- **Navigation Intelligence**: Distinguishes between navigation elements and profile/user elements
+- **Double-Click & Right-Click**: Full mouse interaction support
+- **Drag & Drop**: Move elements between locations
+
+#### ⌨️ **Keyboard & Text Input**
+- **Intelligent Typing**: `type "hello world" in the search box`
+- **Form Field Detection**: Automatically finds and focuses input fields
+- **Smart Text Replacement**: Clears existing content before typing new text
+- **Keyboard Shortcuts**: Execute complex key combinations
+- **Special Keys**: Tab, Enter, Arrow keys, Function keys
+
+#### 📝 **Form Automation**
+- **Smart Form Filling**: `fill out the registration form`
+- **Field Recognition**: Identifies form fields by labels, placeholders, and context
+- **Multiple Input Types**: Text inputs, dropdowns, checkboxes, radio buttons
+- **File Uploads**: Handle file selection dialogs
+- **Form Submission**: Automatic form validation and submission
+
+#### 🪟 **Navigation & Page Control**
+- **Intelligent Navigation**: `go back`, `go forward`, `refresh the page`
+- **New Tab Management**: Open links in new tabs
+- **URL Navigation**: Direct page navigation
+- **Scroll Control**: Smart scrolling to elements or directions
+- **Wait Commands**: Wait for elements, page loads, or specific conditions
+
+#### 🔍 **Data Extraction & Analysis**
+- **Content Extraction**: Get page text, element content, attributes
+- **Smart Screenshots**: Capture full pages or specific elements
+- **Element Information**: Extract URLs, images, form data
+- **Page Analysis**: Comprehensive page structure understanding
+
+#### 🎨 **Visual & Advanced Actions**
+- **Element Highlighting**: Visual feedback for automation actions
+- **Custom CSS Injection**: Style modifications on the fly
+- **JavaScript Execution**: Run custom scripts when needed
+- **Alert Handling**: Manage browser alerts and confirmations
 
 ### 🛡️ **Privacy & Security**
 - 🔐 **Local Storage** - API keys stored securely in Chrome
@@ -185,6 +227,40 @@ The development manifest includes localhost permissions for testing local AI ser
 2. **Type Message**: Enter your question or prompt
 3. **Send**: Press Enter or click send button
 4. **Get Response**: AI responds with context about current page
+
+### 🤖 Browser Automation
+
+ChromeAI Agent now features an advanced automation system with intelligent action planning:
+
+#### 🚀 **Action Planning System**
+Every automation command creates a detailed 2-5 step execution plan:
+```
+Example: "click the back button"
+📋 Action Plan:
+1. Analyze page to locate "back button" element (1000ms)
+2. Verify "back button" is clickable and visible (500ms)
+3. Click on "back button" (500ms)
+4. Validate click action was successful (500ms)
+
+🚀 Executing Action Plan:
+✅ Step 1 completed in 1200ms
+✅ Step 2 completed in 450ms
+✅ Step 3 completed in 680ms
+✅ Step 4 completed in 320ms
+🎯 Action Plan completed in 2650ms
+```
+
+#### 🎯 **Smart Automation Commands**
+- **Navigation**: `click the back button`, `go to settings`, `scroll down`
+- **Form Interaction**: `type "hello" in the search box`, `fill out the form`
+- **Element Interaction**: `click the submit button`, `select the dropdown option`
+- **Page Actions**: `take a screenshot`, `extract all links`, `refresh the page`
+
+#### 🧠 **Enhanced Precision**
+- **Temperature 0 AI**: Consistent, deterministic responses for reliable automation
+- **Advanced Element Scoring**: Sophisticated algorithms to find the most relevant elements
+- **Context-Aware Targeting**: Understands the difference between navigation buttons and profile elements
+- **Anti-Pattern Detection**: Prevents common automation errors
 
 ### Advanced Features
 

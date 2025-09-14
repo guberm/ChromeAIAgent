@@ -2397,8 +2397,10 @@ When user asks for automation, analyze the page content and suggest appropriate 
 
   truncateText(text, maxLength) {
     if (!text) return '';
-    if (text.length <= maxLength) return text;
-    return text.substring(0, maxLength) + '...';
+    // Convert to string if not already a string
+    const textStr = typeof text === 'string' ? text : String(text);
+    if (textStr.length <= maxLength) return textStr;
+    return textStr.substring(0, maxLength) + '...';
   }
 
   formatLogDetails(log) {
@@ -2790,7 +2792,7 @@ When user asks for automation, analyze the page content and suggest appropriate 
     const automationKeywords = [
       'click', 'press', 'tap', 'type', 'enter', 'input', 'fill', 'complete',
       'scroll', 'navigate', 'go to', 'open', 'screenshot', 'extract', 'get',
-      'collect', 'highlight', 'organize', 'take note'
+      'collect', 'highlight', 'organize', 'take note', 'back', 'forward', 'refresh', 'reload'
     ];
     
     const lowerMessage = message.toLowerCase();
@@ -3019,13 +3021,13 @@ ${pageData.elements.map((el, i) =>
 ${pageData.text}`;
     
     // Limit total length but keep essential information
-    if (fullPageSource.length > 50000) {
+    if (fullPageSource.length > 200000) {
       // Truncate HTML but keep elements and text
       const htmlStart = fullPageSource.indexOf('=== HTML SOURCE ===') + 20;
       const htmlEnd = fullPageSource.indexOf('=== INTERACTIVE ELEMENTS ===');
       const beforeHtml = fullPageSource.substring(0, htmlStart);
       const afterHtml = fullPageSource.substring(htmlEnd);
-      const truncatedHtml = pageData.html.substring(0, 20000) + '\n[HTML TRUNCATED...]';
+      const truncatedHtml = pageData.html.substring(0, 80000) + '\n[HTML TRUNCATED...]';
       
       fullPageSource = beforeHtml + truncatedHtml + '\n\n' + afterHtml;
     }

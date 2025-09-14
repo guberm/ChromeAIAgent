@@ -1,4 +1,66 @@
 /* Side panel styles for ChromeAiAgent */
+/* Action Indicator */
+.action-indicator {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+
+.action-indicator-content {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 320px;
+  max-width: 90vw;
+}
+
+.action-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #1a73e8;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: #1a73e8;
+  margin: 0;
+}
+
+.action-description {
+  font-size: 14px;
+  color: #5f6368;
+  margin: 0;
+}
+
+/* Main Styles */
 * {
   margin: 0;
   padding: 0;
@@ -179,7 +241,26 @@ body {
 
 /* Logs view specific styling */
 #logsView {
-  overflow: hidden;
+  display: none;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 999999 !important;
+  background: #ffffff !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+}
+
+#logsView.show {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 
 /* Messages Container */
@@ -887,21 +968,23 @@ body {
 
 /* Chat Logs Styles */
 .logs-container {
-  padding: 20px;
-  height: 100%;
-  overflow-y: auto;
+  padding: 0;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .logs-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 15px;
+  margin-bottom: 0;
+  padding: 20px 20px 15px 20px;
   border-bottom: 1px solid #e8eaed;
   flex-shrink: 0;
+  background: white;
 }
 
 .logs-header h2 {
@@ -909,6 +992,32 @@ body {
   font-size: 20px;
   font-weight: 500;
   margin: 0;
+}
+
+.logs-header-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.nav-button {
+  background: #f8f9fa;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #1a73e8;
+  transition: background-color 0.2s, border-color 0.2s;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  position: relative;
+  z-index: 100;
+}
+
+.nav-button:hover {
+  background: #e8f0fe;
+  border-color: #1a73e8;
 }
 
 .close-button {
@@ -926,11 +1035,42 @@ body {
   color: #d93025;
 }
 
+.logs-footer {
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  border-top: 1px solid #e8eaed;
+  background: #f8f9fa;
+  margin-top: auto;
+  flex-shrink: 0;
+}
+
+.close-logs-button {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 12px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  min-width: 120px;
+}
+
+.close-logs-button:hover {
+  background: #1557b0;
+}
+
+.close-logs-button:active {
+  background: #1348a0;
+}
+
 .log-controls {
   display: flex;
   flex-direction: column;
   gap: 15px;
-  margin-bottom: 20px;
+  margin: 0 20px 20px 20px;
   padding: 15px;
   background: #f8f9fa;
   border-radius: 8px;
@@ -941,11 +1081,19 @@ body {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  padding: 0 20px;
 }
 
 .logs-list {
+  flex: 1;
   max-height: none;
-  overflow-y: visible;
+  min-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  padding: 12px;
+  background: white;
+  margin-bottom: 20px;
 }
 
 .log-search {
@@ -1004,6 +1152,10 @@ body {
   cursor: pointer;
   font-size: 13px;
   transition: background-color 0.2s;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  position: relative;
+  z-index: 100;
 }
 
 .action-button:hover {
@@ -1017,6 +1169,56 @@ body {
 
 .action-button.danger:hover {
   background: #fce8e6;
+}
+
+.export-group {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.format-select {
+  padding: 8px 12px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.format-select:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.action-button.export {
+  background: #1a73e8;
+  color: white;
+  border-color: #1a73e8;
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
+}
+
+.action-button.export:hover {
+  background: #1557b0;
+}
+
+/* Ensure all buttons in logs view are clickable */
+#logsView button {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+}
+
+#logsView .nav-button,
+#logsView .action-button,
+#logsView .close-logs-button {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+  position: relative;
+  z-index: 100;
 }
 
 .log-stats {
@@ -1046,17 +1248,15 @@ body {
   margin-top: 2px;
 }
 
-.logs-list {
-  max-height: 400px;
-  overflow-y: auto;
-  border: 1px solid #e8eaed;
-  border-radius: 6px;
-}
-
 .log-entry {
-  padding: 12px;
+  padding: 20px;
   border-bottom: 1px solid #f1f3f4;
   transition: background-color 0.2s;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: #fafbfc;
+  min-height: auto;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .log-entry:hover {
@@ -1118,19 +1318,27 @@ body {
 
 .log-prompt {
   background: #f8f9fa;
-  padding: 8px;
+  padding: 12px;
   border-left: 3px solid #1a73e8;
   border-radius: 0 4px 4px 0;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .log-response {
   background: #e8f5e8;
-  padding: 8px;
+  padding: 12px;
   border-left: 3px solid #34a853;
   border-radius: 0 4px 4px 0;
   font-size: 13px;
+  line-height: 1.5;
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .log-error {
@@ -1205,10 +1413,11 @@ body {
 }
 
 .log-settings {
-  margin-top: 30px;
-  padding-top: 20px;
+  margin: 0 20px;
+  padding: 20px;
   border-top: 1px solid #e8eaed;
   flex-shrink: 0;
+  background: #f8f9fa;
 }
 
 .log-settings h3 {
