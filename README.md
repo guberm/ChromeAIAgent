@@ -4,7 +4,7 @@
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
-![Version](https://img.shields.io/badge/Version-2.2.4-brightgreen)
+![Version](https://img.shields.io/badge/Version-2.2.5-brightgreen)
 ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 ![Multi Provider](https://img.shields.io/badge/Multi-Provider-orange)
 ![Automation](https://img.shields.io/badge/Browser-Automation-red)
@@ -35,6 +35,15 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 ---
 
 ## ✨ Features
+
+## 🆕 What's New in 2.2.5
+
+- Source and runtime build fully synchronized; all automation and UI fixes mirrored into `build/`
+- Compound navigation + search flows hardened in background executor; reliable results landing
+- Promise-aware script injection across XPath and legacy pipelines with page readiness checks
+- Chat: Gemini response parsing stabilized; logs show more content with truncation hints
+- Restricted page handling: clearer side panel messaging, avoids unsupported injections/capture
+- Packaging: cleaned build script and exclude list for reproducible, smaller zip
 
 ## 🆕 What's New in 2.2.4
 

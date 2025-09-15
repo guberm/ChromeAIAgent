@@ -40,6 +40,13 @@ Access powerful AI capabilities from one convenient interface:
 
 Perfect for developers, researchers, writers, students, and professionals who want intelligent assistance while browsing the web.
 
+## What's New (2.2.5)
+- Full source/build sync so the loaded extension matches recent fixes
+- More reliable compound automation flows (new tab + search) with real navigation waits
+- Promise-aware injected actions; improved page readiness checks
+- Gemini response parsing stabilized; logs show more content with a truncation indicator
+- Clearer UI for restricted pages; avoids attempting unsupported actions
+
 ## What's New (2.2.4)
 - Improved reliability for multi-step automation (including search flows and consent dialog handling)
 - Better parsing for compound commands (e.g., open a new tab and search)
