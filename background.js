@@ -270,10 +270,15 @@ function xpathAutomationScript(action, params) {
   function findElementForAutomation(selector, actionType) {
     const analysis = window.chromeAiAgentPageAnalysis;
     
+    console.log('[XPathAutomation] Looking for element:', selector, 'action:', actionType);
+    
     // If selector is already an XPath, use it directly
     if (selector.startsWith('/') || selector.startsWith('//')) {
       const element = findElementByXPath(selector);
-      if (element) return element;
+      if (element) {
+        console.log('[XPathAutomation] Found element by direct XPath');
+        return element;
+      }
     }
     
     // Search in analyzed elements
@@ -287,30 +292,75 @@ function xpathAutomationScript(action, params) {
       candidates = analysis.interactiveElements;
     }
     
+    console.log('[XPathAutomation] Searching among', candidates.length, 'candidates');
+    
     // Find best match by text content, attributes, or properties
-    const selectorLower = selector.toLowerCase();
-    const bestMatch = candidates.find(elem => {
-      return (
-        elem.text.toLowerCase().includes(selectorLower) ||
-        elem.id?.toLowerCase().includes(selectorLower) ||
-        elem.attributes.name?.toLowerCase().includes(selectorLower) ||
-        elem.attributes.placeholder?.toLowerCase().includes(selectorLower) ||
-        elem.attributes['aria-label']?.toLowerCase().includes(selectorLower) ||
-        elem.classes.some(cls => cls.toLowerCase().includes(selectorLower))
-      );
+    const selectorLower = selector.toLowerCase().replace(/['"]/g, ''); // Remove quotes
+    
+    // Exact text match first
+    let bestMatch = candidates.find(elem => {
+      const text = elem.text?.toLowerCase() || '';
+      return text === selectorLower;
     });
     
+    // If no exact match, try partial text match
+    if (!bestMatch) {
+      bestMatch = candidates.find(elem => {
+        const text = elem.text?.toLowerCase() || '';
+        return text.includes(selectorLower) || selectorLower.includes(text);
+      });
+    }
+    
+    // If still no match, try attribute and property matching
+    if (!bestMatch) {
+      bestMatch = candidates.find(elem => {
+        return (
+          elem.id?.toLowerCase().includes(selectorLower) ||
+          elem.attributes.name?.toLowerCase().includes(selectorLower) ||
+          elem.attributes.placeholder?.toLowerCase().includes(selectorLower) ||
+          elem.attributes['aria-label']?.toLowerCase().includes(selectorLower) ||
+          elem.attributes.title?.toLowerCase().includes(selectorLower) ||
+          elem.attributes.alt?.toLowerCase().includes(selectorLower) ||
+          elem.classes.some(cls => cls.toLowerCase().includes(selectorLower))
+        );
+      });
+    }
+    
     if (bestMatch) {
-      console.log('[XPathAutomation] Found element via analysis:', bestMatch.xpath);
+      console.log('[XPathAutomation] Found element via analysis:', {
+        text: bestMatch.text,
+        xpath: bestMatch.xpath,
+        tagName: bestMatch.tagName,
+        score: bestMatch.automationScore
+      });
       return findElementByXPath(bestMatch.xpath);
     }
     
-    // Fallback to CSS selector
-    try {
-      return document.querySelector(selector);
-    } catch {
-      return null;
+    console.log('[XPathAutomation] No match found in analysis, trying direct DOM search...');
+    
+    // Fallback 1: Direct text search in DOM
+    const allElements = document.querySelectorAll('button, a, input, [role="button"], [onclick]');
+    for (const element of allElements) {
+      const text = element.textContent?.toLowerCase() || '';
+      if (text.includes(selectorLower) || selectorLower.includes(text)) {
+        console.log('[XPathAutomation] Found via direct DOM text search:', element);
+        return element;
+      }
     }
+    
+    // Fallback 2: CSS selector
+    try {
+      const cssResult = document.querySelector(selector);
+      if (cssResult) {
+        console.log('[XPathAutomation] Found via CSS selector:', cssResult);
+        return cssResult;
+      }
+    } catch (cssError) {
+      console.log('[XPathAutomation] CSS selector failed:', cssError.message);
+    }
+    
+    console.log('[XPathAutomation] Element not found for selector:', selector);
+    return null;
   }
   
   // Automation actions using XPath
@@ -319,8 +369,108 @@ function xpathAutomationScript(action, params) {
       const element = findElementForAutomation(selector, 'click');
       if (!element) return { success: false, error: 'Element not found for click', selector };
       
-      element.click();
-      return { success: true, action: 'click', xpath: generateXPathForElement(element), selector };
+      console.log('[XPathAutomation] Found element for click:', element, 'XPath:', generateXPathForElement(element));
+      
+      // Enhanced click with multiple strategies for modern web apps
+      try {
+        // Strategy 1: Scroll element into view
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        // Strategy 2: Simulate user interaction events
+        const rect = element.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        
+        // Dispatch mouse events in correct sequence
+        const mouseEvents = ['mousedown', 'mouseup', 'click'];
+        mouseEvents.forEach(eventType => {
+          const event = new MouseEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            clientX: centerX,
+            clientY: centerY,
+            button: 0,
+            buttons: 1
+          });
+          element.dispatchEvent(event);
+        });
+        
+        // Strategy 3: Also try focus + Enter for keyboard accessibility
+        if (element.tagName === 'BUTTON' || element.role === 'button') {
+          element.focus();
+          setTimeout(() => {
+            const enterEvent = new KeyboardEvent('keydown', {
+              bubbles: true,
+              cancelable: true,
+              key: 'Enter',
+              keyCode: 13,
+              which: 13
+            });
+            element.dispatchEvent(enterEvent);
+          }, 50);
+        }
+        
+        // Strategy 4: Direct click as fallback
+        element.click();
+        
+        // Validation: Check if click had any effect (page change, new elements, etc.)
+        const initialUrl = window.location.href;
+        const initialActiveElement = document.activeElement;
+        
+        // Wait a bit to see if anything changed
+        setTimeout(() => {
+          const urlChanged = window.location.href !== initialUrl;
+          const focusChanged = document.activeElement !== initialActiveElement;
+          const hasVisibleChange = element.style.display === 'none' || element.classList.contains('active');
+          
+          console.log('[XPathAutomation] Click validation:', {
+            urlChanged,
+            focusChanged,
+            hasVisibleChange,
+            currentUrl: window.location.href,
+            originalUrl: initialUrl
+          });
+        }, 200);
+        
+        return { 
+          success: true, 
+          action: 'click', 
+          xpath: generateXPathForElement(element), 
+          selector,
+          element: {
+            tagName: element.tagName,
+            text: element.textContent?.slice(0, 50),
+            id: element.id,
+            classes: Array.from(element.classList)
+          }
+        };
+        
+      } catch (clickError) {
+        console.error('[XPathAutomation] Enhanced click failed:', clickError);
+        
+        // Final fallback: basic click
+        try {
+          element.click();
+          return { 
+            success: true, 
+            action: 'click', 
+            xpath: generateXPathForElement(element), 
+            selector,
+            warning: 'Enhanced click failed, used basic click',
+            error: clickError.message
+          };
+        } catch (basicClickError) {
+          return { 
+            success: false, 
+            error: 'All click strategies failed', 
+            selector,
+            xpath: generateXPathForElement(element),
+            enhancedError: clickError.message,
+            basicError: basicClickError.message
+          };
+        }
+      }
     },
     
     type: (selector, text) => {
