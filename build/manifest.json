@@ -8,7 +8,10 @@
     "sidePanel",
     "activeTab",
     "tabs",
-    "scripting"
+    "identity",
+    "cookies",
+    "scripting",
+    "tabGroups"
   ],
   "host_permissions": [
     "https://api.openai.com/*",
@@ -21,7 +24,12 @@
     "https://generativelanguage.googleapis.com/*",
     "https://*.openai.azure.com/*",
     "https://*.ai.azure.com/*",
-    "https://openrouter.ai/*"
+    "https://openrouter.ai/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "http://127.0.0.1:11434/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
