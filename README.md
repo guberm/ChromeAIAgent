@@ -121,7 +121,7 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 ## 🚀 Installation
 
 ### Method 1: Chrome Web Store
-1. Visit the [Chrome Web Store](https://chrome.google.com/webstore) (coming soon)
+1. Visit the [Chrome Web Store](https://chromewebstore.google.com/detail/chromeaiagent/faaanahikgkfpecahodibkoehicliafn)
 2. Search for "ChromeAI Agent"
 3. Click "Add to Chrome"
 4. Pin the extension for easy access
