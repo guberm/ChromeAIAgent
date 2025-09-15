@@ -4,7 +4,7 @@
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
-![Version](https://img.shields.io/badge/Version-2.2.4-brightgreen)
+![Version](https://img.shields.io/badge/Version-2.2.5-brightgreen)
 ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 ![Multi Provider](https://img.shields.io/badge/Multi-Provider-orange)
 ![Automation](https://img.shields.io/badge/Browser-Automation-red)
@@ -35,6 +35,12 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 ---
 
 ## ✨ Features
+
+## 🆕 What's New in 2.2.5
+
+- ✨ **Capture & Summarize**: Instantly screenshot the visible tab and get an AI-generated summary with one click. Works with all providers; Gemini models reference the screenshot for vision-style summarization (textual fallback for now).
+- All changes mirrored to the build folder for runtime consistency.
+- Minor UI and automation robustness fixes.
 
 ## 🆕 What's New in 2.2.4
 

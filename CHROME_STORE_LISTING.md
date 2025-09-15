@@ -40,6 +40,11 @@ Access powerful AI capabilities from one convenient interface:
 
 Perfect for developers, researchers, writers, students, and professionals who want intelligent assistance while browsing the web.
 
+## What's New (2.2.5)
+- New "Capture & Summarize" button: Instantly screenshot the visible tab and get an AI-generated summary with one click. Works with all providers; Gemini models reference the screenshot for vision-style summarization (textual fallback for now).
+- All changes mirrored to the build folder for runtime consistency.
+- Minor UI and automation robustness fixes.
+
 ## What's New (2.2.4)
 - Improved reliability for multi-step automation (including search flows and consent dialog handling)
 - Better parsing for compound commands (e.g., open a new tab and search)

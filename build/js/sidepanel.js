@@ -57,6 +57,12 @@ class ChromeAiAgent {
       });
     }
 
+    // Capture & Summarize
+    const captureBtn = document.getElementById('captureSummarizeBtn');
+    if (captureBtn) {
+      captureBtn.addEventListener('click', () => this.captureAndSummarize());
+    }
+
     const newChatBtn = document.getElementById('newChatBtn');
     if (newChatBtn) {
       newChatBtn.addEventListener('click', () => {
@@ -1505,6 +1511,103 @@ When user asks for automation, the system will automatically find the best XPath
     } finally {
       this.isStreaming = false;
       this.updateStreamingUI(false);
+    }
+  }
+
+  async captureAndSummarize() {
+    try {
+      // Indicate action
+      const actionTitle = document.getElementById('actionTitle');
+      const actionDesc = document.getElementById('actionDescription');
+      const indicator = document.getElementById('actionIndicator');
+      if (actionTitle) actionTitle.textContent = 'Capturing tab…';
+      if (actionDesc) actionDesc.textContent = 'Taking a screenshot of the visible tab and summarizing it.';
+      if (indicator) indicator.style.display = 'flex';
+
+      // Refresh page context
+      await this.loadPageContext();
+
+      // Request screenshot via automation handler
+      const shotResp = await chrome.runtime.sendMessage({
+        action: 'automationCommand',
+        command: 'screenshot'
+      });
+
+      if (!shotResp || !shotResp.success || !shotResp.result || !shotResp.result.screenshot) {
+        throw new Error(shotResp?.error || 'Failed to capture screenshot');
+      }
+
+      const dataUrl = shotResp.result.screenshot; // data:image/png;base64,...
+
+      // Build a summarization prompt
+      const summaryPrompt = `Summarize the captured page at ${this.pageInfo?.url || 'current page'}. Focus on primary content, headings, key facts, and actionable items. Provide:
+ - Title and purpose in one line
+ - 3-7 bullet highlights
+ - Any warnings or errors noticed
+ - Next recommended actions`;
+
+      // Provider/model
+      const providerSelect = document.getElementById('providerSelect');
+      const modelSelect = document.getElementById('modelSelect');
+      const provider = providerSelect ? providerSelect.value : this.settings?.provider;
+      const model = (modelSelect && modelSelect.value) ? modelSelect.value : this.settings?.model;
+
+      // Prepare messages
+      const messages = [];
+      messages.push({ role: 'system', content: `You are a helpful AI assistant. The user is currently on: ${this.pageInfo?.title || 'Unknown'} (${this.pageInfo?.url || 'Unknown URL'})`});
+
+      if (provider === 'gemini' && model && /vision|g(?!pt)|gemini/i.test(model)) {
+        messages.push({ role: 'user', content: `${summaryPrompt}\n\nImage data URL (for reference): ${dataUrl.substring(0, 128)}...` });
+      } else {
+        messages.push({ role: 'user', content: `${summaryPrompt}\n\n(Note: Screenshot captured; image omitted for this provider.)` });
+      }
+
+      // Add user message to chat UI
+      this.addMessage('user', 'Capture and summarize this page.');
+      const typingId = this.addTypingIndicator();
+      this.isStreaming = true;
+      this.updateStreamingUI(true);
+
+      // Send to background using the same handler as chat
+      const aiResp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'sendAIMessage',
+          data: { messages, provider, model, stream: false }
+        }, resolve);
+      });
+
+      this.removeTypingIndicator(typingId);
+      this.isStreaming = false;
+      this.updateStreamingUI(false);
+      if (indicator) indicator.style.display = 'none';
+
+      if (aiResp && aiResp.success && aiResp.result) {
+        // Extract text similar to sendMessage()
+        let content = '';
+        const result = aiResp.result;
+        if (result.candidates && result.candidates[0]?.content?.parts) {
+          content = result.candidates[0].content.parts[0].text;
+        } else if (result.choices && result.choices[0]?.message) {
+          content = result.choices[0].message.content;
+        } else if (result.content) {
+          content = typeof result.content === 'string' ? result.content : JSON.stringify(result.content);
+        } else if (typeof result === 'string') {
+          content = result;
+        } else {
+          content = 'No content in response';
+        }
+        const pageLink = this.pageInfo?.url ? `\n\nPage: ${this.pageInfo.url}` : '';
+        this.addMessage('assistant', `${content}${pageLink}`);
+      } else if (aiResp && aiResp.error) {
+        this.addMessage('assistant', `❌ Summarization failed: ${aiResp.error}`);
+      } else {
+        this.addMessage('assistant', '❌ Summarization failed: Unknown error');
+      }
+    } catch (err) {
+      console.error('Capture & Summarize failed:', err);
+      const indicator = document.getElementById('actionIndicator');
+      if (indicator) indicator.style.display = 'none';
+      this.addMessage('assistant', `❌ Failed to capture and summarize: ${err.message}`);
     }
   }
 
