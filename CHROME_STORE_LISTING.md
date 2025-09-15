@@ -40,6 +40,13 @@ Access powerful AI capabilities from one convenient interface:
 
 Perfect for developers, researchers, writers, students, and professionals who want intelligent assistance while browsing the web.
 
+## What's New (2.2.4)
+- Improved reliability for multi-step automation (including search flows and consent dialog handling)
+- Better parsing for compound commands (e.g., open a new tab and search)
+- Gemini response parsing fix in chat
+- Chat logs now show more content with truncation indicators
+- Clearer UI messaging for restricted pages (chrome://, Web Store)
+
 ## Category
 Productivity
 
@@ -83,11 +90,12 @@ https://github.com/guberm/ChromeAI-Agent/blob/master/PRIVACY.md
 Free (users provide their own API keys)
 
 ## Permissions Justification
-- storage: Save user settings and conversation logs
-- sidePanel: Provide chat interface
-- activeTab: Get page context for AI assistance
-- tabs: Access page information
-- identity: OAuth authentication with AI providers
-- cookies: Maintain authentication sessions
-- scripting: Inject content scripts for page analysis
-- host_permissions: Connect to AI provider APIs
+- **storage**: Save user settings, AI provider configurations, and conversation logs locally in Chrome
+- **sidePanel**: Provide dedicated chat interface accessible from any webpage
+- **activeTab**: Get current page context and content to provide AI assistance relevant to what user is viewing
+- **tabs**: Access page information and metadata to enhance AI responses with page context
+- **identity**: Enable OAuth authentication with AI providers (Google, Microsoft Azure) for secure API access without storing credentials
+- **cookies**: Maintain authentication sessions with AI provider services to avoid repeated logins and ensure seamless user experience
+- **scripting**: Inject content scripts for advanced page analysis, element detection, and browser automation features
+- **tabGroups**: Organize and manage browser tabs efficiently when performing multi-page automation tasks and AI-assisted workflows
+- **host_permissions**: Connect securely to AI provider APIs (OpenAI, Claude, Gemini, etc.) and enable web automation on user-requested websites
