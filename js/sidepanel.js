@@ -1317,7 +1317,7 @@ Available actions are limited to basic navigation commands.`;
         // Add automation capabilities context
         if (!this.pageInfo.isRestricted) {
           systemMessage += `\n\nAVAILABLE AUTOMATION ACTIONS:
-You can help automate browser interactions using these actions:
+You can help automate browser interactions using these advanced XPath-based actions:
 - Mouse Events: click, hover, doubleClick, rightClick, mouseDown, mouseUp, scroll
 - Keyboard Events: type, keyDown, keyUp, sendKeys (for key combinations like Ctrl+C)
 - Form Actions: focus, blur, select, check, submit, reset, clearInput, uploadFile
@@ -1328,8 +1328,16 @@ You can help automate browser interactions using these actions:
 - Visual Actions: highlight, hide, show, setStyle
 - Waiting: wait, waitForElement, waitForText, waitForUrl
 - Extract: extractPageElements (get all interactive elements)
+- XPath Analysis: analyzePage (analyze all page elements and create XPath memory map for precise automation)
 
-When user asks for automation, analyze the page content and suggest appropriate CSS selectors for the elements they want to interact with.`;
+🔬 ENHANCED XPATH AUTOMATION SYSTEM:
+The system automatically analyzes the page before each automation action:
+1. Scans all interactive elements (buttons, inputs, links, forms)
+2. Generates XPath selectors for each element with automation scoring
+3. Creates a memory map of elements for precise targeting
+4. Executes actions using XPath for maximum reliability
+
+When user asks for automation, the system will automatically find the best XPath selector for the target element. You can also suggest using 'analyzePage' command to manually inspect all available interactive elements on the page.`;
         } else {
           systemMessage += `\n\n🚫 AUTOMATION DISABLED: Browser automation is not available on this page type. You can help with general questions but cannot perform any automation actions. Suggest navigating to a regular website for automation features.`;
         }

@@ -3,6 +3,397 @@
 // Temporarily commented out to fix service worker registration
 // importScripts('mcp-provider-interface.js');
 
+// XPath Page Analysis System
+function pageAnalysisScript() {
+  console.log('[XPathAnalysis] Starting comprehensive page analysis...');
+  
+  // Generate XPath for element
+  function generateXPath(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+    
+    // Handle special cases
+    if (element.id) {
+      return `//*[@id="${element.id}"]`;
+    }
+    
+    const parts = [];
+    let current = element;
+    
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      let tagName = current.tagName.toLowerCase();
+      let selector = tagName;
+      
+      // Add position if there are siblings with same tag
+      if (current.parentNode) {
+        const siblings = Array.from(current.parentNode.children)
+          .filter(sibling => sibling.tagName.toLowerCase() === tagName);
+        
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          selector += `[${index}]`;
+        }
+      }
+      
+      parts.unshift(selector);
+      current = current.parentNode;
+    }
+    
+    return '/' + parts.join('/');
+  }
+  
+  // Analyze element properties for automation scoring
+  function analyzeElement(element) {
+    const analysis = {
+      xpath: generateXPath(element),
+      tagName: element.tagName.toLowerCase(),
+      id: element.id || null,
+      classes: Array.from(element.classList),
+      text: element.textContent?.trim().substring(0, 100) || '',
+      attributes: {},
+      isVisible: isElementVisible(element),
+      isClickable: isElementClickable(element),
+      isInput: isElementInput(element),
+      boundingRect: element.getBoundingClientRect(),
+      automationScore: 0
+    };
+    
+    // Collect relevant attributes
+    ['type', 'name', 'placeholder', 'value', 'href', 'role', 'aria-label', 'title'].forEach(attr => {
+      if (element.hasAttribute(attr)) {
+        analysis.attributes[attr] = element.getAttribute(attr);
+      }
+    });
+    
+    // Calculate automation relevance score
+    analysis.automationScore = calculateAutomationScore(element, analysis);
+    
+    return analysis;
+  }
+  
+  // Check if element is visible
+  function isElementVisible(element) {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    
+    return rect.width > 0 && 
+           rect.height > 0 && 
+           style.display !== 'none' && 
+           style.visibility !== 'hidden' && 
+           style.opacity !== '0';
+  }
+  
+  // Check if element is clickable
+  function isElementClickable(element) {
+    const clickableTags = ['a', 'button', 'input', 'select', 'textarea'];
+    const clickableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio'];
+    
+    if (clickableTags.includes(element.tagName.toLowerCase())) return true;
+    if (element.getAttribute('role') === 'button') return true;
+    if (element.getAttribute('onclick')) return true;
+    if (element.style.cursor === 'pointer') return true;
+    
+    return false;
+  }
+  
+  // Check if element is input
+  function isElementInput(element) {
+    const inputTags = ['input', 'textarea', 'select'];
+    const editableTypes = ['text', 'email', 'password', 'search', 'url', 'tel', 'number'];
+    
+    if (inputTags.includes(element.tagName.toLowerCase())) return true;
+    if (element.isContentEditable) return true;
+    
+    return false;
+  }
+  
+  // Calculate automation relevance score
+  function calculateAutomationScore(element, analysis) {
+    let score = 0;
+    
+    // Visibility bonus
+    if (analysis.isVisible) score += 10;
+    
+    // Interactivity bonuses
+    if (analysis.isClickable) score += 15;
+    if (analysis.isInput) score += 15;
+    
+    // Text content bonus
+    if (analysis.text.length > 0) score += 5;
+    if (analysis.text.length > 10) score += 5;
+    
+    // ID bonus
+    if (analysis.id) score += 10;
+    
+    // Semantic attributes bonus
+    if (analysis.attributes['aria-label']) score += 8;
+    if (analysis.attributes.role) score += 5;
+    if (analysis.attributes.title) score += 3;
+    
+    // Form-related bonuses
+    if (analysis.attributes.name) score += 7;
+    if (analysis.attributes.placeholder) score += 5;
+    
+    // Size bonus for reasonable sized elements
+    const rect = analysis.boundingRect;
+    if (rect.width >= 10 && rect.height >= 10) score += 5;
+    if (rect.width >= 50 && rect.height >= 20) score += 5;
+    
+    return score;
+  }
+  
+  // Main analysis function
+  function analyzePageElements() {
+    const allElements = document.querySelectorAll('*');
+    const analysis = {
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+      timestamp: new Date().toISOString(),
+      totalElements: allElements.length,
+      interactiveElements: [],
+      elementsByXPath: new Map(),
+      topScoredElements: [],
+      categories: {
+        buttons: [],
+        inputs: [],
+        links: [],
+        forms: [],
+        navigation: [],
+        content: []
+      }
+    };
+    
+    console.log(`[XPathAnalysis] Analyzing ${allElements.length} elements...`);
+    
+    // Analyze each element
+    allElements.forEach(element => {
+      const elementAnalysis = analyzeElement(element);
+      
+      // Skip elements with very low scores or invisible elements
+      if (elementAnalysis.automationScore < 5 || !elementAnalysis.isVisible) return;
+      
+      // Store by XPath for quick lookup
+      analysis.elementsByXPath.set(elementAnalysis.xpath, elementAnalysis);
+      analysis.interactiveElements.push(elementAnalysis);
+      
+      // Categorize elements
+      if (elementAnalysis.tagName === 'button' || elementAnalysis.attributes.role === 'button') {
+        analysis.categories.buttons.push(elementAnalysis);
+      } else if (elementAnalysis.isInput) {
+        analysis.categories.inputs.push(elementAnalysis);
+      } else if (elementAnalysis.tagName === 'a') {
+        analysis.categories.links.push(elementAnalysis);
+      } else if (elementAnalysis.tagName === 'form') {
+        analysis.categories.forms.push(elementAnalysis);
+      } else if (elementAnalysis.tagName === 'nav' || 
+                 elementAnalysis.classes.some(cls => cls.includes('nav'))) {
+        analysis.categories.navigation.push(elementAnalysis);
+      } else {
+        analysis.categories.content.push(elementAnalysis);
+      }
+    });
+    
+    // Sort by automation score (highest first)
+    analysis.interactiveElements.sort((a, b) => b.automationScore - a.automationScore);
+    analysis.topScoredElements = analysis.interactiveElements.slice(0, 50);
+    
+    // Sort categories by score
+    Object.keys(analysis.categories).forEach(category => {
+      analysis.categories[category].sort((a, b) => b.automationScore - a.automationScore);
+    });
+    
+    console.log(`[XPathAnalysis] Analysis complete:`, {
+      interactiveElements: analysis.interactiveElements.length,
+      buttons: analysis.categories.buttons.length,
+      inputs: analysis.categories.inputs.length,
+      links: analysis.categories.links.length,
+      topScore: analysis.topScoredElements[0]?.automationScore || 0
+    });
+    
+    return analysis;
+  }
+  
+  // Execute analysis and return results
+  try {
+    const pageAnalysis = analyzePageElements();
+    
+    // Store analysis in global variable for quick access
+    window.chromeAiAgentPageAnalysis = pageAnalysis;
+    
+    return {
+      success: true,
+      analysis: pageAnalysis,
+      message: `Page analysis complete: ${pageAnalysis.interactiveElements.length} interactive elements found`
+    };
+  } catch (error) {
+    console.error('[XPathAnalysis] Analysis failed:', error);
+    return {
+      success: false,
+      error: error.message,
+      message: 'Page analysis failed'
+    };
+  }
+}
+
+// Enhanced XPath-based element execution
+function xpathAutomationScript(action, params) {
+  console.log('[XPathAutomation] Executing action:', action, 'with params:', params);
+  
+  // Get stored page analysis
+  const pageAnalysis = window.chromeAiAgentPageAnalysis;
+  if (!pageAnalysis) {
+    console.warn('[XPathAutomation] No page analysis found, running quick analysis...');
+    // If no analysis exists, run a quick one
+    const analysisResult = pageAnalysisScript();
+    if (!analysisResult.success) {
+      return { success: false, error: 'Failed to analyze page for XPath automation' };
+    }
+  }
+  
+  // XPath-based element finder
+  function findElementByXPath(xpath) {
+    try {
+      const result = document.evaluate(
+        xpath,
+        document,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      );
+      return result.singleNodeValue;
+    } catch (error) {
+      console.error('[XPathAutomation] XPath evaluation failed:', xpath, error);
+      return null;
+    }
+  }
+  
+  // Enhanced element finder using XPath and analysis
+  function findElementForAutomation(selector, actionType) {
+    const analysis = window.chromeAiAgentPageAnalysis;
+    
+    // If selector is already an XPath, use it directly
+    if (selector.startsWith('/') || selector.startsWith('//')) {
+      const element = findElementByXPath(selector);
+      if (element) return element;
+    }
+    
+    // Search in analyzed elements
+    let candidates = [];
+    
+    if (actionType === 'click') {
+      candidates = [...analysis.categories.buttons, ...analysis.categories.links];
+    } else if (actionType === 'type' || actionType === 'input') {
+      candidates = analysis.categories.inputs;
+    } else {
+      candidates = analysis.interactiveElements;
+    }
+    
+    // Find best match by text content, attributes, or properties
+    const selectorLower = selector.toLowerCase();
+    const bestMatch = candidates.find(elem => {
+      return (
+        elem.text.toLowerCase().includes(selectorLower) ||
+        elem.id?.toLowerCase().includes(selectorLower) ||
+        elem.attributes.name?.toLowerCase().includes(selectorLower) ||
+        elem.attributes.placeholder?.toLowerCase().includes(selectorLower) ||
+        elem.attributes['aria-label']?.toLowerCase().includes(selectorLower) ||
+        elem.classes.some(cls => cls.toLowerCase().includes(selectorLower))
+      );
+    });
+    
+    if (bestMatch) {
+      console.log('[XPathAutomation] Found element via analysis:', bestMatch.xpath);
+      return findElementByXPath(bestMatch.xpath);
+    }
+    
+    // Fallback to CSS selector
+    try {
+      return document.querySelector(selector);
+    } catch {
+      return null;
+    }
+  }
+  
+  // Automation actions using XPath
+  const xpathAutomation = {
+    click: (selector) => {
+      const element = findElementForAutomation(selector, 'click');
+      if (!element) return { success: false, error: 'Element not found for click', selector };
+      
+      element.click();
+      return { success: true, action: 'click', xpath: generateXPathForElement(element), selector };
+    },
+    
+    type: (selector, text) => {
+      const element = findElementForAutomation(selector, 'type');
+      if (!element) return { success: false, error: 'Element not found for typing', selector };
+      
+      element.focus();
+      element.value = text;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, action: 'type', xpath: generateXPathForElement(element), text, selector };
+    },
+    
+    scroll: (direction = 'down', amount = 300) => {
+      const scrollAmount = direction === 'up' ? -amount : amount;
+      window.scrollBy(0, scrollAmount);
+      return { success: true, action: 'scroll', direction, amount };
+    },
+    
+    wait: (ms = 1000) => {
+      return new Promise(resolve => {
+        setTimeout(() => resolve({ success: true, action: 'wait', duration: ms }), ms);
+      });
+    }
+  };
+  
+  // Helper function to generate XPath for any element
+  function generateXPathForElement(element) {
+    if (!element) return null;
+    
+    if (element.id) {
+      return `//*[@id="${element.id}"]`;
+    }
+    
+    const parts = [];
+    let current = element;
+    
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      let tagName = current.tagName.toLowerCase();
+      let selector = tagName;
+      
+      if (current.parentNode) {
+        const siblings = Array.from(current.parentNode.children)
+          .filter(sibling => sibling.tagName.toLowerCase() === tagName);
+        
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          selector += `[${index}]`;
+        }
+      }
+      
+      parts.unshift(selector);
+      current = current.parentNode;
+    }
+    
+    return '/' + parts.join('/');
+  }
+  
+  // Execute the action
+  if (xpathAutomation[action]) {
+    try {
+      const result = xpathAutomation[action](...Object.values(params || {}));
+      console.log('[XPathAutomation] Action completed:', result);
+      return result;
+    } catch (error) {
+      console.error('[XPathAutomation] Action execution error:', error);
+      return { success: false, error: 'XPath automation action failed: ' + error.message, action, params };
+    }
+  } else {
+    return { success: false, error: 'Unknown XPath automation action: ' + action, action, params };
+  }
+}
+
 // Content script function for automation (defined globally for serialization)
 function automationContentScript(action, params) {
     // Dynamic and flexible element finding system - no hardcoded field names
@@ -1869,7 +2260,8 @@ class BrowserAutomation {
       highlight: this.handleHighlight.bind(this),
       organize: this.handleOrganize.bind(this),
       note: this.handleNote.bind(this),
-      wait: this.handleWait.bind(this)
+      wait: this.handleWait.bind(this),
+      analyzePage: this.handleAnalyzePage.bind(this)
     };
     
     this.domAnalyzer = new DOMAnalyzer();
@@ -2360,24 +2752,151 @@ class BrowserAutomation {
     return { success: true, action: 'waited' };
   }
 
+  async handleAnalyzePage(command, tabId) {
+    try {
+      console.log('[XPathSystem] Manual page analysis requested');
+      
+      const analysisResult = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: pageAnalysisScript
+      });
+      
+      const result = analysisResult[0]?.result;
+      
+      if (result?.success) {
+        console.log('[XPathSystem] Manual page analysis completed:', 
+          result.analysis.interactiveElements.length, 'interactive elements found');
+        
+        return {
+          success: true,
+          action: 'analyzePage',
+          analysis: {
+            pageUrl: result.analysis.pageUrl,
+            pageTitle: result.analysis.pageTitle,
+            totalElements: result.analysis.totalElements,
+            interactiveElements: result.analysis.interactiveElements.length,
+            categories: {
+              buttons: result.analysis.categories.buttons.length,
+              inputs: result.analysis.categories.inputs.length,
+              links: result.analysis.categories.links.length,
+              forms: result.analysis.categories.forms.length,
+              navigation: result.analysis.categories.navigation.length
+            },
+            topElements: result.analysis.topScoredElements.slice(0, 10).map(elem => ({
+              xpath: elem.xpath,
+              tagName: elem.tagName,
+              text: elem.text.substring(0, 50),
+              score: elem.automationScore,
+              isClickable: elem.isClickable,
+              isInput: elem.isInput
+            }))
+          },
+          message: `Page analyzed: ${result.analysis.interactiveElements.length} interactive elements found`
+        };
+      } else {
+        return {
+          success: false,
+          action: 'analyzePage',
+          error: result?.error || 'Analysis failed',
+          message: 'Failed to analyze page'
+        };
+      }
+    } catch (error) {
+      console.error('[XPathSystem] Manual page analysis error:', error);
+      return {
+        success: false,
+        action: 'analyzePage',
+        error: error.message,
+        message: 'Page analysis failed: ' + error.message
+      };
+    }
+  }
+
   async injectAndExecute(tabId, action, params = {}) {
     try {
       // Ensure params is serializable (plain object or null)
       const serializableParams = params ? JSON.parse(JSON.stringify(params)) : {};
       
+      // Step 1: Analyze page if not done already (or if analysis is old)
+      console.log('[XPathSystem] Checking if page analysis is needed...');
+      
+      const analysisCheck = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const analysis = window.chromeAiAgentPageAnalysis;
+          if (!analysis) return { needsAnalysis: true, reason: 'No analysis found' };
+          
+          const ageMs = Date.now() - new Date(analysis.timestamp).getTime();
+          const maxAgeMs = 30000; // 30 seconds
+          
+          if (ageMs > maxAgeMs) {
+            return { needsAnalysis: true, reason: 'Analysis is outdated', age: ageMs };
+          }
+          
+          return { 
+            needsAnalysis: false, 
+            elementCount: analysis.interactiveElements.length,
+            age: ageMs
+          };
+        }
+      });
+      
+      const needsAnalysis = analysisCheck[0]?.result?.needsAnalysis;
+      
+      if (needsAnalysis) {
+        console.log('[XPathSystem] Running page analysis:', analysisCheck[0]?.result?.reason);
+        
+        const analysisResult = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: pageAnalysisScript
+        });
+        
+        if (analysisResult[0]?.result?.success) {
+          console.log('[XPathSystem] Page analysis completed:', 
+            analysisResult[0].result.analysis.interactiveElements.length, 'elements found');
+        } else {
+          console.warn('[XPathSystem] Page analysis failed:', analysisResult[0]?.result?.error);
+        }
+      } else {
+        console.log('[XPathSystem] Using existing analysis:', 
+          analysisCheck[0]?.result?.elementCount, 'elements,', 
+          Math.round(analysisCheck[0]?.result?.age / 1000), 'seconds old');
+      }
+      
+      // Step 2: Execute automation using XPath system
+      console.log('[XPathSystem] Executing XPath-based automation:', action);
+      
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        func: automationContentScript,
+        func: xpathAutomationScript,
         args: [action, serializableParams]
       });
+      
       const resultObj = results && results[0] ? results[0].result : null;
+      
       if (!resultObj) {
-        console.warn('Automation injection returned empty result for action:', action, 'params:', serializableParams);
-        return { success: false, action, error: 'No result from content script', params: serializableParams };
+        console.warn('[XPathSystem] XPath automation returned empty result, falling back to legacy system');
+        
+        // Fallback to original automation system
+        const fallbackResults = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: automationContentScript,
+          args: [action, serializableParams]
+        });
+        
+        const fallbackResult = fallbackResults && fallbackResults[0] ? fallbackResults[0].result : null;
+        if (fallbackResult) {
+          return { ...fallbackResult, usedFallback: true };
+        }
+        
+        return { success: false, action, error: 'No result from XPath or fallback automation', params: serializableParams };
       }
+      
+      console.log('[XPathSystem] XPath automation completed:', resultObj);
       return resultObj;
+      
     } catch (error) {
-      console.error('Script injection failed:', error);
+      console.error('[XPathSystem] Script injection failed:', error);
       throw error;
     }
   }
