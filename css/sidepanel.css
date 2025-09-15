@@ -1379,6 +1379,13 @@ body {
   overflow-y: auto;
 }
 
+.truncation-indicator {
+  color: #1a73e8;
+  font-size: 10px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .logs-pagination {
   display: flex;
   justify-content: center;
