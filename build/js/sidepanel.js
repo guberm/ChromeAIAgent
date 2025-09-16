@@ -318,7 +318,6 @@ Available actions are limited to basic navigation commands.`;
     //   /^edge:\/\//,
     //   /^firefox:\/\//,
     //   /^moz-extension:\/\//,
-    //   /^chrome\.google\.com\/webstore/,
     //   /^addons\.mozilla\.org/,
     //   /^microsoftedge\.microsoft\.com/
     ];
@@ -331,7 +330,6 @@ Available actions are limited to basic navigation commands.`;
     
     // if (url.startsWith('chrome://')) return 'Chrome Internal Page';
     // if (url.startsWith('chrome-extension://')) return 'Chrome Extension Page';
-    // if (url.includes('chrome.google.com/webstore')) return 'Chrome Web Store';
     // if (url.includes('addons.mozilla.org')) return 'Firefox Add-ons Store';
     // if (url.startsWith('edge://')) return 'Edge Internal Page';
     // if (url.startsWith('firefox://')) return 'Firefox Internal Page';
