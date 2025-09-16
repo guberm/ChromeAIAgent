@@ -40,6 +40,13 @@ Access powerful AI capabilities from one convenient interface:
 
 Perfect for developers, researchers, writers, students, and professionals who want intelligent assistance while browsing the web.
 
+## What's New (2.2.6)
+- Enhanced build consistency and preservation of manual edits across versions
+- Improved packaging with better exclusion filters and automatic Chrome Web Store zip creation
+- Optimized file structure for Chrome Web Store: no development artifacts or unnecessary files
+- Strengthened build pipeline stability and eliminated cyclic copy issues
+- Refined tag versioning strategy to handle remote conflicts smoothly
+
 ## What's New (2.2.5)
 - Full source/build sync so the loaded extension matches recent fixes
 - More reliable compound automation flows (new tab + search) with real navigation waits
