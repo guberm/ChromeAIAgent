@@ -313,14 +313,14 @@ Available actions are limited to basic navigation commands.`;
     if (!url) return true;
     
     const restrictedPatterns = [
-      /^chrome:\/\//,
-      /^chrome-extension:\/\//,
-      /^edge:\/\//,
-      /^firefox:\/\//,
-      /^moz-extension:\/\//,
-      /^chrome\.google\.com\/webstore/,
-      /^addons\.mozilla\.org/,
-      /^microsoftedge\.microsoft\.com/
+      // /^chrome:\/\//,
+      // /^chrome-extension:\/\//,
+      // /^edge:\/\//,
+      // /^firefox:\/\//,
+      // /^moz-extension:\/\//,
+      // /^chrome\.google\.com\/webstore/,
+      // /^addons\.mozilla\.org/,
+      // /^microsoftedge\.microsoft\.com/
     ];
     
     return restrictedPatterns.some(pattern => pattern.test(url));
@@ -329,19 +329,21 @@ Available actions are limited to basic navigation commands.`;
   getPageType(url) {
     if (!url) return 'Unknown';
     
-    if (url.startsWith('chrome://')) return 'Chrome Internal Page';
-    if (url.startsWith('chrome-extension://')) return 'Chrome Extension Page';
-    if (url.includes('chrome.google.com/webstore')) return 'Chrome Web Store';
-    if (url.includes('addons.mozilla.org')) return 'Firefox Add-ons Store';
-    if (url.startsWith('edge://')) return 'Edge Internal Page';
-    if (url.startsWith('firefox://')) return 'Firefox Internal Page';
-    if (url.startsWith('moz-extension://')) return 'Firefox Extension Page';
+    // if (url.startsWith('chrome://')) return 'Chrome Internal Page';
+    // if (url.startsWith('chrome-extension://')) return 'Chrome Extension Page';
+    // if (url.includes('chrome.google.com/webstore')) return 'Chrome Web Store';
+    // if (url.includes('addons.mozilla.org')) return 'Firefox Add-ons Store';
+    // if (url.startsWith('edge://')) return 'Edge Internal Page';
+    // if (url.startsWith('firefox://')) return 'Firefox Internal Page';
+    // if (url.startsWith('moz-extension://')) return 'Firefox Extension Page';
+    // if (url.startsWith('https://')) return 'Regular Website';
     
-    return 'Restricted Page';
+    
+    return 'Regular Website';
   }
 
   updatePageContext() {
-    const pageContextEl = document.getElementById('pageContext');
+    const pageContextEl = document.documentElement.outerHTML;
     const pageTitleEl = document.getElementById('pageTitle');
     
     if (this.pageInfo && this.pageInfo.title) {
@@ -1467,7 +1469,11 @@ When user asks for automation, the system will automatically find the best XPath
           console.log('🔍 response.result:', response.result);
           console.log('🔍 response.result type:', typeof response.result);
           
-          if (response.result.choices && response.result.choices[0] && response.result.choices[0].message) {
+          // Handle Gemini API format
+          if (response.result.candidates && response.result.candidates[0] && response.result.candidates[0].content && response.result.candidates[0].content.parts) {
+            content = response.result.candidates[0].content.parts[0].text;
+            console.log('🔍 Extracted from Gemini candidates format:', content);
+          } else if (response.result.choices && response.result.choices[0] && response.result.choices[0].message) {
             content = response.result.choices[0].message.content;
             console.log('🔍 Extracted from choices[0].message.content:', content);
           } else if (response.result.content) {
@@ -1477,6 +1483,7 @@ When user asks for automation, the system will automatically find the best XPath
             content = response.result;
             console.log('🔍 Using result as string:', content);
           } else {
+            console.log('🔍 Available result keys:', Object.keys(response.result));
             content = 'No content in response';
             console.log('🔍 No recognizable content structure');
           }
@@ -1904,6 +1911,7 @@ When user asks for automation, the system will automatically find the best XPath
     document.getElementById('logsView').style.display = 'block';
     this.currentView = 'logs';
     this.loadChatLogs();
+    this.loadAutomationHistory();
   }
 
   startNewChat() {
@@ -2343,10 +2351,21 @@ When user asks for automation, the system will automatically find the best XPath
     const logsList = document.getElementById('logsList');
     if (!logsList) return;
 
+    // Preserve automation history section if it exists
+    const automationSection = logsList.querySelector('.automation-history-section');
+    
     logsList.innerHTML = '';
+    
+    // Restore automation history section
+    if (automationSection) {
+      logsList.appendChild(automationSection);
+    }
 
     if (logs.length === 0) {
-      logsList.innerHTML = '<div class="no-logs">No chat logs found</div>';
+      const noLogsDiv = document.createElement('div');
+      noLogsDiv.className = 'no-logs';
+      noLogsDiv.textContent = 'No chat logs found';
+      logsList.appendChild(noLogsDiv);
       return;
     }
 
@@ -2376,11 +2395,11 @@ When user asks for automation, the system will automatically find the best XPath
       </div>
       <div class="log-content">
         <div class="log-prompt">
-          <strong>Prompt:</strong> ${this.truncateText(log.prompt, 200)}
+          <strong>Prompt:</strong> ${this.truncateText(log.prompt, 500)}
         </div>
         ${log.response ? `
           <div class="log-response">
-            <strong>Response:</strong> ${this.truncateText(log.response, 300)}
+            <strong>Response:</strong> ${this.truncateText(log.response, 1000)}
           </div>
         ` : ''}
         ${log.error ? `
@@ -2391,7 +2410,7 @@ When user asks for automation, the system will automatically find the best XPath
       </div>
       <div class="log-meta">
         <span>Source: ${log.source || 'Unknown'}</span>
-        <button class="log-details-btn" onclick="toggleLogDetails('${log.id}')">
+        <button class="log-details-btn" data-log-id="${log.id}">
           Show Details
         </button>
       </div>
@@ -2400,18 +2419,59 @@ When user asks for automation, the system will automatically find the best XPath
       </div>
     `;
 
+    // Add event listener for the details button
+    const detailsBtn = logDiv.querySelector('.log-details-btn');
+    if (detailsBtn) {
+      detailsBtn.addEventListener('click', () => {
+        this.toggleLogDetails(log.id);
+      });
+    }
+
     return logDiv;
   }
 
   truncateText(text, maxLength) {
     if (!text) return '';
-    // Convert to string if not already a string
-    const textStr = typeof text === 'string' ? text : String(text);
+    
+    // Handle different data types properly
+    let textStr;
+    if (typeof text === 'string') {
+      textStr = text;
+    } else if (typeof text === 'object') {
+      // For objects, try to extract meaningful content
+      if (text.content) {
+        textStr = text.content;
+      } else if (text.message) {
+        textStr = text.message;
+      } else if (text.text) {
+        textStr = text.text;
+      } else {
+        // Fallback to JSON string for objects
+        textStr = JSON.stringify(text, null, 2);
+      }
+    } else {
+      textStr = String(text);
+    }
+    
     if (textStr.length <= maxLength) return textStr;
-    return textStr.substring(0, maxLength) + '...';
+    return textStr.substring(0, maxLength) + '... <span class="truncation-indicator">(click "Show Details" for full text)</span>';
   }
 
   formatLogDetails(log) {
+    // Handle response object properly
+    let fullResponse = log.response || 'No response';
+    if (typeof fullResponse === 'object') {
+      if (fullResponse.content) {
+        fullResponse = fullResponse.content;
+      } else if (fullResponse.message) {
+        fullResponse = fullResponse.message;
+      } else if (fullResponse.text) {
+        fullResponse = fullResponse.text;
+      } else {
+        fullResponse = JSON.stringify(fullResponse, null, 2);
+      }
+    }
+
     const details = {
       'ID': log.id,
       'Timestamp': new Date(log.timestamp).toISOString(),
@@ -2421,13 +2481,17 @@ When user asks for automation, the system will automatically find the best XPath
       'Timing': log.timing ? `${log.timing}ms` : 'N/A',
       'Source': log.source,
       'Full Prompt': log.prompt,
-      'Full Response': log.response || 'No response',
+      'Full Response': fullResponse,
       'Error': log.error || 'No error',
-      'Request Payload': JSON.stringify(log.requestPayload, null, 2)
+      'Request Payload': log.requestPayload ? JSON.stringify(log.requestPayload, null, 2) : 'N/A'
     };
 
     return Object.entries(details)
-      .map(([key, value]) => `<strong>${key}:</strong> ${value}`)
+      .map(([key, value]) => {
+        // Escape HTML for the value part
+        const escapedValue = this.escapeHtml(String(value));
+        return `<strong>${key}:</strong> <span class="detail-value">${escapedValue}</span>`;
+      })
       .join('<br>');
   }
 
@@ -2524,24 +2588,33 @@ When user asks for automation, the system will automatically find the best XPath
   }
 
   async clearChatLogs() {
-    if (!confirm('Are you sure you want to clear all chat logs? This action cannot be undone.')) {
+    if (!confirm('Are you sure you want to clear all chat logs and automation history? This action cannot be undone.')) {
       return;
     }
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      // Clear both chat logs and automation history
+      const chatResponse = await chrome.runtime.sendMessage({
         action: 'clearChatLogs'
       });
 
-      if (response.success) {
-        this.loadChatLogs(); // Refresh the display
-        this.showSuccess('Chat logs cleared successfully');
+      // Clear automation history
+      await chrome.storage.local.remove('automationHistory');
+
+      if (chatResponse.success) {
+        // Clear the display immediately
+        const logsList = document.getElementById('logsList');
+        if (logsList) {
+          logsList.innerHTML = '<div class="no-logs">No logs found</div>';
+        }
+        
+        this.showSuccess('All logs cleared successfully');
       } else {
-        this.showError('Failed to clear chat logs: ' + response.error);
+        this.showError('Failed to clear chat logs: ' + chatResponse.error);
       }
     } catch (error) {
-      console.error('Error clearing chat logs:', error);
-      this.showError('Error clearing chat logs');
+      console.error('Error clearing logs:', error);
+      this.showError('Error clearing logs');
     }
   }
 
@@ -2720,8 +2793,59 @@ When user asks for automation, the system will automatically find the best XPath
   }
 
   loadAutomationHistory() {
-    // Load any saved automation history from storage if needed
+    // Load and display automation history from storage
     console.log('Loading automation history...');
+    
+    chrome.storage.local.get('automationHistory', (result) => {
+      const history = result.automationHistory || [];
+      console.log('Automation history loaded:', history.length, 'entries');
+      
+      if (history.length > 0) {
+        this.displayAutomationHistory(history);
+      }
+    });
+  }
+
+  displayAutomationHistory(history) {
+    const logsList = document.getElementById('logsList');
+    if (!logsList) return;
+
+    // Add automation history section
+    const automationSection = document.createElement('div');
+    automationSection.className = 'automation-history-section';
+    automationSection.innerHTML = `
+      <h3 class="history-section-title">🤖 Automation History</h3>
+      <div class="automation-history-list"></div>
+    `;
+
+    const automationList = automationSection.querySelector('.automation-history-list');
+    
+    // Display recent automation entries (last 20)
+    const recentHistory = history.slice(-20).reverse();
+    
+    recentHistory.forEach(entry => {
+      const historyItem = document.createElement('div');
+      historyItem.className = 'automation-history-item';
+      
+      const timestamp = new Date(entry.timestamp).toLocaleString();
+      const command = entry.command || 'Unknown command';
+      const url = entry.url || 'Unknown URL';
+      const success = entry.result?.success !== false;
+      
+      historyItem.innerHTML = `
+        <div class="history-item-header">
+          <span class="history-timestamp">${timestamp}</span>
+          <span class="history-status ${success ? 'success' : 'error'}">${success ? '✅' : '❌'}</span>
+        </div>
+        <div class="history-command">${this.escapeHtml(command)}</div>
+        <div class="history-url">${this.escapeHtml(url)}</div>
+      `;
+      
+      automationList.appendChild(historyItem);
+    });
+
+    // Insert automation history before existing content
+    logsList.insertBefore(automationSection, logsList.firstChild);
   }
 
   // Notes Methods
@@ -2824,6 +2948,7 @@ When user asks for automation, the system will automatically find the best XPath
     const lowerMessage = message.toLowerCase();
     const isNavigationAction = lowerMessage.includes('new tab') || 
                               lowerMessage.includes('navigate to') || 
+                              lowerMessage.includes('navigate http') ||
                               lowerMessage.includes('go to') ||
                               lowerMessage.includes('open') && (lowerMessage.includes('tab') || lowerMessage.includes('page'));
 
