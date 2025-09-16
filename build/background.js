@@ -2168,6 +2168,149 @@ function automationContentScript(action, params) {
           console.error('waitForNetworkIdle error:', e);
           return { success: false, error: e.message };
         }
+      },
+
+      // Perform search on the page
+      performSearch: (searchTerm) => {
+        try {
+          console.log('[XPathAutomation] Performing search for:', searchTerm);
+          // Helper sleep
+          function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+          // Try to dismiss Google/EU consent dialogs if present
+          try {
+            const clickIfMatches = (el, patterns) => {
+              const text = (el?.textContent || '').trim().toLowerCase();
+              return patterns.some(p => text.includes(p));
+            };
+            const consentPatterns = ['i agree', 'accept all', 'accept', 'i accept', 'got it', 'agree'];
+            const candidates = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]'));
+            const consentButton = candidates.find(el => clickIfMatches(el, consentPatterns));
+            if (consentButton) {
+              console.log('[XPathAutomation] Clicking consent button:', consentButton.textContent?.trim());
+              consentButton.click();
+            }
+          } catch (e) {
+            console.log('[XPathAutomation] Consent handling skipped/failed:', e);
+          }
+
+          // Small wait after consent click
+          // Note: since this function can return a Promise, injectAndExecute must support awaiting it
+          const maybeWait = () => sleep(200);
+          // Common search input selectors for different sites
+          const searchSelectors = [
+            'input[name="q"]',           // Google, YouTube
+            'input[id="APjFqb"]',        // Google main search
+            'textarea[name="q"]',        // Google variants using textarea
+            'form[role="search"] input[name="q"]',
+            'input[type="search"]',      // Generic search inputs
+            'input[placeholder*="search" i]',  // Inputs with "search" in placeholder
+            'input[aria-label*="search" i]',   // Inputs with "search" in aria-label
+            '[role="searchbox"]',        // Searchbox role
+            'input[name="search"]',      // Named search inputs
+            '#search',                   // Common ID
+            '.search input',             // Common class with input
+            'input[class*="search" i]',   // Class containing "search"
+            'textarea[title*="search" i]',
+            'input[title*="search" i]'
+          ];
+
+          let searchInput = null;
+          let searchButton = null;
+
+          // Find search input
+          for (const selector of searchSelectors) {
+            try {
+              const element = document.querySelector(selector);
+              if (element && element.offsetParent !== null) { // visible element
+                searchInput = element;
+                console.log('[XPathAutomation] Found search input with selector:', selector);
+                break;
+              }
+            } catch (e) {
+              console.log('[XPathAutomation] Selector failed:', selector, e);
+            }
+          }
+
+          if (!searchInput) {
+            return { success: false, error: 'No search input found on this page' };
+          }
+
+          // Focus and set value using native setter for React/JS frameworks
+          searchInput.focus();
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(searchInput), 'value')?.set;
+          if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(searchInput, searchTerm);
+          } else {
+            searchInput.value = searchTerm;
+          }
+          // Dispatch input/change events
+          searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+          searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+          // Find and click search button
+          const searchButtonSelectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button[aria-label*="search" i]',
+            '.gNO89b',                   // Google search button
+            'button[value*="search" i]'
+          ];
+
+          let foundButton = false;
+          for (const selector of searchButtonSelectors) {
+            try {
+              const element = document.querySelector(selector);
+              if (element && element.offsetParent !== null) {
+                searchButton = element;
+                foundButton = true;
+                console.log('[XPathAutomation] Found search button with selector:', selector);
+                break;
+              }
+            } catch (e) {
+              console.log('[XPathAutomation] Search button selector failed:', selector, e);
+            }
+          }
+
+          // Submit search
+          if (foundButton && searchButton) {
+            // Wait a bit for value to propagate
+            return maybeWait().then(() => {
+              searchButton.click();
+              return {
+                success: true,
+                action: 'search_submitted',
+                searchTerm: searchTerm,
+                method: 'button_click',
+                message: `Search submitted for "${searchTerm}" via button click`
+              };
+            });
+          } else {
+            // Try submitting via Enter key if no button found
+            return maybeWait().then(() => {
+              ['keydown', 'keypress', 'keyup'].forEach(type => {
+                const event = new KeyboardEvent(type, {
+                  key: 'Enter',
+                  code: 'Enter',
+                  keyCode: 13,
+                  which: 13,
+                  bubbles: true
+                });
+                searchInput.dispatchEvent(event);
+              });
+              return {
+                success: true,
+                action: 'search_submitted',
+                searchTerm: searchTerm,
+                method: 'enter_key',
+                message: `Search submitted for "${searchTerm}" via Enter key`
+              };
+            });
+          }
+        } catch (error) {
+          console.error('[XPathAutomation] Search failed:', error);
+          return { success: false, error: 'Search failed: ' + error.message };
+        }
       }
     };
 
@@ -2405,6 +2548,7 @@ class BrowserAutomation {
       goBack: this.handleGoBack.bind(this),
       goForward: this.handleGoForward.bind(this),
       newTab: this.handleNewTab.bind(this),
+      newTabWithSearch: this.handleNewTabWithSearch.bind(this),
       screenshot: this.handleScreenshot.bind(this),
       extract: this.handleExtract.bind(this),
       highlight: this.handleHighlight.bind(this),
@@ -2464,6 +2608,10 @@ class BrowserAutomation {
           
           // Execute the main action step (the actual automation)
           if (step.action === parsedCommand.action) {
+            // Check if page is ready before action
+            console.log('🔍 Checking if page is ready for action...');
+            await this.waitForPageReady(tabId);
+            
             const handler = this.commands[parsedCommand.action];
             if (!handler) {
               throw new Error(`No handler found for action: ${parsedCommand.action}`);
@@ -2471,6 +2619,13 @@ class BrowserAutomation {
             
             console.log('📊 BrowserAutomation: Executing main action handler for:', parsedCommand.action);
             stepResult = await handler(parsedCommand, tabId);
+            
+            // Wait for page to load after navigation actions
+            if (parsedCommand.action === 'navigate' || parsedCommand.action === 'newTab') {
+              console.log('🕐 Waiting for page to load after navigation...');
+              await this.waitForPageLoad(tabId);
+              console.log('✅ Page loaded, continuing with next step');
+            }
           } else {
             // For preparation, verification, and other steps, just simulate execution
             await new Promise(resolve => setTimeout(resolve, Math.min(step.estimatedTime || 200, 1000)));
@@ -2589,33 +2744,51 @@ class BrowserAutomation {
 
       // Execute plan steps
       const results = [];
+      let currentTabId = tabId;
       for (const step of plan.plan) {
         try {
-          console.log(`ðŸ”„ Executing step: ${step.description}`);
-          
+          console.log(`🔧 Executing step: ${step.description}`);
+
           if (step.action === 'wait') {
-            await this.handleWait(step, tabId);
+            await this.handleWait(step, currentTabId);
             results.push({ success: true, step: step.description });
             continue;
           }
+
+          // Check if page is ready before each action
+          console.log('🔍 Checking if page is ready for action...');
+          await this.waitForPageReady(currentTabId);
 
           const handler = this.commands[step.action];
           if (!handler) {
             throw new Error(`Unknown action in plan: ${step.action}`);
           }
 
-          const result = await handler(step, tabId);
+          const result = await handler(step, currentTabId);
           results.push({ success: true, step: step.description, result });
-          
-          // Small delay between steps
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
+
+          // If the handler returns a new tabId (e.g., after newTab/newTabWithSearch), update currentTabId
+          if (result && result.tabId && result.tabId !== currentTabId) {
+            currentTabId = result.tabId;
+            console.log('🔄 Updated currentTabId to', currentTabId, 'after', step.action);
+          }
+
+          // Wait for page to load after navigation actions
+          if (step.action === 'navigate' || step.action === 'newTab' || step.action === 'newTabWithSearch') {
+            console.log('🕐 Waiting for page to load after navigation...');
+            await this.waitForPageLoad(currentTabId);
+            console.log('✅ Page loaded, continuing with next step');
+          }
+
+          // Increased delay between steps for better stability
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
         } catch (stepError) {
           console.error(`Step failed: ${step.description}`, stepError);
           results.push({ success: false, step: step.description, error: stepError.message });
-          
+
           // Continue with remaining steps unless it's a critical failure
-          if (step.action === 'navigate' || step.action === 'newTab') {
+          if (step.action === 'navigate' || step.action === 'newTab' || step.action === 'newTabWithSearch') {
             break; // Stop if navigation fails
           }
         }
@@ -2769,7 +2942,8 @@ class BrowserAutomation {
   }
 
   async handleNavigate(command, tabId) {
-    return await chrome.tabs.update(tabId, { url: command.url });
+    const url = command.url || command.target;
+    return await chrome.tabs.update(tabId, { url: url });
   }
 
   async handleRefresh(command, tabId) {
@@ -2788,6 +2962,88 @@ class BrowserAutomation {
         error: 'Failed to refresh page: ' + error.message
       };
     }
+  }
+
+  async waitForPageLoad(tabId, timeout = 30000) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        
+        // Check if page is fully loaded and ready
+        if (tab.status === 'complete' && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+          // Additional check: ensure page is interactive by injecting a small script
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: () => document.readyState === 'complete'
+            });
+            console.log(`✅ Page fully loaded and interactive: ${tab.url}`);
+            return true;
+          } catch (scriptError) {
+            console.log('📄 Page loaded but not yet interactive, waiting...');
+          }
+        }
+        
+        // Wait 3 seconds before checking again
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } catch (error) {
+        console.error('Error checking tab status:', error);
+        break;
+      }
+    }
+    
+    // Timeout reached, but continue anyway
+    console.warn(`Page load timeout reached (${timeout}ms), continuing...`);
+    return false;
+  }
+
+  async waitForPageReady(tabId, timeout = 15000) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        
+        // Skip check for restricted pages
+        if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('https://') || tab.url.startsWith('http://')) {
+          return false;
+        }
+        
+        // Check if page is ready for interaction
+        if (tab.status === 'complete') {
+          try {
+            const [result] = await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: () => {
+                return {
+                  readyState: document.readyState,
+                  hasBody: !!document.body,
+                  bodyChildren: document.body ? document.body.children.length : 0
+                };
+              }
+            });
+            
+            if (result.result.readyState === 'complete' && result.result.hasBody && result.result.bodyChildren > 0) {
+              console.log(`✅ Page ready for action: ${tab.url}`);
+              return true;
+            }
+          } catch (scriptError) {
+            console.log('📄 Page not yet interactive, waiting...');
+          }
+        }
+        
+        // Wait 3 seconds before checking again
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } catch (error) {
+        console.error('Error checking page readiness:', error);
+        break;
+      }
+    }
+    
+    console.warn(`Page readiness timeout reached (${timeout}ms), continuing...`);
+    return false;
   }
 
   async handleGoBack(command, tabId) {
@@ -2847,6 +3103,81 @@ class BrowserAutomation {
       tabId: newTab.id,
       message: `Opened new tab with ${command.url}`
     };
+  }
+
+  async handleNewTabWithSearch(command, tabId) {
+    // First open the URL in a new tab
+    const newTab = await chrome.tabs.create({ url: command.url });
+    
+    // Wait for the page to load
+    await this.waitForPageLoad(newTab.id);
+    
+    try {
+      // Attempt to perform search on the page
+      // For Google, try to find the search input and type the search term
+      const searchResult = await this.injectAndExecute(newTab.id, 'performSearch', { 
+        searchTerm: command.searchTerm 
+      });
+      console.log('[Automation] performSearch result:', searchResult);
+
+      // After attempting search, give the page a moment to navigate if it will
+      await this.waitForPageLoad(newTab.id, 15000);
+
+      // Check if navigation actually occurred to a results page; if not or search failed, fallback to direct URL
+      let tabInfo = await chrome.tabs.get(newTab.id);
+      const lowerUrl = String(command.url || '').toLowerCase();
+      const isGoogle = /google\./.test(lowerUrl);
+      const isBing = /bing\./.test(lowerUrl);
+      const isDuck = /duckduckgo\./.test(lowerUrl);
+      const isYahoo = /yahoo\./.test(lowerUrl);
+      const onResultsPage = /[?&]q=/.test(tabInfo.url) || /\/search\b/.test(tabInfo.url);
+
+      if (!(searchResult && searchResult.success) || !onResultsPage) {
+        console.warn('[Automation] Search injection may have failed or not navigated; falling back to direct search URL');
+        let searchUrl;
+        const q = encodeURIComponent(command.searchTerm || '');
+        if (isGoogle) searchUrl = `https://www.google.com/search?q=${q}`;
+        else if (isBing) searchUrl = `https://www.bing.com/search?q=${q}`;
+        else if (isDuck) searchUrl = `https://duckduckgo.com/?q=${q}`;
+        else if (isYahoo) searchUrl = `https://search.yahoo.com/search?p=${q}`;
+        else searchUrl = `https://www.google.com/search?q=${q}`;
+
+        await chrome.tabs.update(newTab.id, { url: searchUrl });
+        await this.waitForPageLoad(newTab.id);
+        tabInfo = await chrome.tabs.get(newTab.id);
+        console.log('[Automation] Fallback navigation complete. Current URL:', tabInfo.url);
+
+        return { 
+          success: true, 
+          action: 'newTabWithSearch', 
+          url: command.url,
+          searchTerm: command.searchTerm,
+          tabId: newTab.id,
+          searchResult: searchResult,
+          usedFallback: true,
+          message: `Opened new tab with ${command.url} and navigated directly to results for "${command.searchTerm}"`
+        };
+      }
+
+      return { 
+        success: true, 
+        action: 'newTabWithSearch', 
+        url: command.url,
+        searchTerm: command.searchTerm,
+        tabId: newTab.id,
+        searchResult: searchResult,
+        message: `Opened new tab with ${command.url} and searched for "${command.searchTerm}"`
+      };
+    } catch (error) {
+      console.log('Search failed, but tab was created successfully:', error);
+      return { 
+        success: true, 
+        action: 'newTab', 
+        url: command.url, 
+        tabId: newTab.id,
+        message: `Opened new tab with ${command.url} (search for "${command.searchTerm}" could not be performed automatically)`
+      };
+    }
   }
 
   async handleScreenshot(command, tabId) {
@@ -3016,32 +3347,73 @@ class BrowserAutomation {
       // Step 2: Execute automation using XPath system
       console.log('[XPathSystem] Executing XPath-based automation:', action);
       
+
       const results = await chrome.scripting.executeScript({
         target: { tabId },
         func: xpathAutomationScript,
         args: [action, serializableParams]
       });
-      
-      const resultObj = results && results[0] ? results[0].result : null;
-      
+
+      let resultObj = results && results[0] ? results[0].result : null;
+
+      // If the result is a Promise (unresolved), inject a wrapper to await it and return the resolved value
+      if (resultObj && typeof resultObj === 'object' && typeof resultObj.then === 'function') {
+        // The result is a native Promise object, so we need to resolve it in the page context
+        const promiseResults = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async () => {
+            if (window.__lastAutomationPromise && typeof window.__lastAutomationPromise.then === 'function') {
+              try {
+                const resolved = await window.__lastAutomationPromise;
+                return resolved;
+              } catch (e) {
+                return { success: false, error: 'Promise rejected: ' + e.message };
+              }
+            }
+            return { success: false, error: 'No automation promise found' };
+          }
+        });
+        resultObj = promiseResults && promiseResults[0] ? promiseResults[0].result : resultObj;
+      }
+
       if (!resultObj) {
         console.warn('[XPathSystem] XPath automation returned empty result, falling back to legacy system');
-        
+
         // Fallback to original automation system
         const fallbackResults = await chrome.scripting.executeScript({
           target: { tabId },
           func: automationContentScript,
           args: [action, serializableParams]
         });
-        
-        const fallbackResult = fallbackResults && fallbackResults[0] ? fallbackResults[0].result : null;
+
+        let fallbackResult = fallbackResults && fallbackResults[0] ? fallbackResults[0].result : null;
+
+        // If fallback result is a Promise, resolve it as well
+        if (fallbackResult && typeof fallbackResult === 'object' && typeof fallbackResult.then === 'function') {
+          const fallbackPromiseResults = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async () => {
+              if (window.__lastAutomationPromise && typeof window.__lastAutomationPromise.then === 'function') {
+                try {
+                  const resolved = await window.__lastAutomationPromise;
+                  return resolved;
+                } catch (e) {
+                  return { success: false, error: 'Promise rejected: ' + e.message };
+                }
+              }
+              return { success: false, error: 'No automation promise found' };
+            }
+          });
+          fallbackResult = fallbackPromiseResults && fallbackPromiseResults[0] ? fallbackPromiseResults[0].result : fallbackResult;
+        }
+
         if (fallbackResult) {
           return { ...fallbackResult, usedFallback: true };
         }
-        
+
         return { success: false, action, error: 'No result from XPath or fallback automation', params: serializableParams };
       }
-      
+
       console.log('[XPathSystem] XPath automation completed:', resultObj);
       return resultObj;
       
@@ -4180,8 +4552,9 @@ class AICommandParser {
       refresh: /(?:refresh|reload)(?:\s+(?:the\s+)?page|\(\))?/i,
       goBack: /(?:go\s+back|navigate\s+back|back|click\s+(?:the\s+)?back(?:\s+button)?)/i,
       goForward: /(?:go\s+forward|navigate\s+forward|forward|click\s+(?:the\s+)?forward(?:\s+button)?)/i,
-      newTabAndNavigate: /(?:open\s+)?new\s+tab\s+and\s+(?:navigate\s+to|go\s+to)\s+(.+)/i,
-      newTab: /(?:open\s+)?(?:new\s+tab(?:\s+(?:with))?)\s+(.+)/i,
+      newTabAndNavigate: /(?:open\s+)?new\s+tab\s+and\s+(?:navigate\s+to|go\s+to)\s+([^\s]+)(?:\s+and\s+(.+))?/i,
+      newTabWithSearch: /(?:open\s+)?new\s+tab\s+with\s+([^\s]+)\s+and\s+search\s+(.+)/i,
+      newTab: /(?:open\s+)?(?:new\s+tab(?:\s+(?:with))?)\s+([^\s]+)(?:\s+(?!and).*)?/i,
       navigate: /(?:go to|navigate to|open)\s+(.+)/i,
       
       // Content manipulation
@@ -4306,7 +4679,9 @@ class AICommandParser {
       case 'goForward':
         return { action: 'goForward' };
       case 'newTabAndNavigate':
-        return { action: 'newTab', url: this.normalizeUrl(match[1]) };
+        return { action: 'newTab', url: this.normalizeUrl(match[1]), followUp: match[2] };
+      case 'newTabWithSearch':
+        return { action: 'newTabWithSearch', url: this.normalizeUrl(match[1]), searchTerm: match[2] };
       case 'newTab':
         return { action: 'newTab', url: this.normalizeUrl(match[1]) };
       case 'navigate':

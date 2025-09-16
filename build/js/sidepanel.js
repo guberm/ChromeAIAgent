@@ -313,13 +313,13 @@ Available actions are limited to basic navigation commands.`;
     if (!url) return true;
     
     const restrictedPatterns = [
-    //   /^chrome:\/\//,
-    //   /^chrome-extension:\/\//,
-    //   /^edge:\/\//,
-    //   /^firefox:\/\//,
-    //   /^moz-extension:\/\//,
-    //   /^addons\.mozilla\.org/,
-    //   /^microsoftedge\.microsoft\.com/
+      // /^chrome:\/\//,
+      // /^chrome-extension:\/\//,
+      // /^edge:\/\//,
+      // /^firefox:\/\//,
+      // /^moz-extension:\/\//,
+      // /^addons\.mozilla\.org/,
+      // /^microsoftedge\.microsoft\.com/
     ];
     
     return restrictedPatterns.some(pattern => pattern.test(url));
@@ -3073,9 +3073,7 @@ function extractPageContent() {
       }
       
       if (element.className) {
-        // Ensure className is a string before splitting
-        const classStr = typeof element.className === 'string' ? element.className : String(element.className && element.className.baseVal ? element.className.baseVal : '');
-        const classes = classStr.split(' ').filter(cls => cls);
+        const classes = element.className.split(' ').filter(cls => cls);
         if (classes.length > 0) {
           return `.${classes[0]}`;
         }
