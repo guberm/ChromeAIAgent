@@ -12,15 +12,16 @@ REM Use robocopy to avoid cyclic copy issues and honor excludes
 REM Exclude directories: build, .git
 REM Exclude files: patterns from build-exclude.txt (mirrored below)
 robocopy . build /E /NFL /NDL /NJH /NJS /NC /NS ^
-	/XD build .git .github node_modules ^
-	/XF build-exclude.txt build-webstore.bat launch-chrome.bat LICENSE *.md *.zip *.bat *.ps1 *.cmd manifest-dev.json test-*.html original_* package-lock.json yarn.lock pnpm-lock.yaml >nul
+    /XD build .git .github node_modules ^
+    /XF build-exclude.txt build-webstore.bat launch-chrome.bat LICENSE *.md *.zip *.bat *.ps1 *.cmd manifest-dev.json test-*.html original_* package-lock.json yarn.lock pnpm-lock.yaml >nul
 
 if %ERRORLEVEL% GEQ 8 (
-	echo robocopy reported an error. Code: %ERRORLEVEL%
-	exit /b %ERRORLEVEL%
+    echo robocopy reported an error. Code: %ERRORLEVEL%
+    exit /b %ERRORLEVEL%
 )
 
-echo.
+REM Remove localhost URLs from manifest for Chrome Web Store compliance
+powershell -NoLogo -NoProfile -Command "(Get-Content 'build/manifest.json') -replace '    \"http://localhost:\*/\*\",\r?\n' -replace '    \"http://127\.0\.0\.1:\*/\*\",\r?\n' -replace '    \"http://127\.0\.0\.1:11434/\*\",\r?\n' | Set-Content 'build/manifest.json'"echo.
 echo Package created in 'build' directory
 
 REM Create build.zip for Chrome Web Store upload
