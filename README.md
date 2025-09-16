@@ -4,7 +4,7 @@
 
 ![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=googlechrome&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)
-![Version](https://img.shields.io/badge/Version-2.2.6-brightgreen)
+![Version](https://img.shields.io/badge/Version-2.3.0-brightgreen)
 ![AI Powered](https://img.shields.io/badge/AI-Powered-purple)
 ![Multi Provider](https://img.shields.io/badge/Multi-Provider-orange)
 ![Automation](https://img.shields.io/badge/Browser-Automation-red)
@@ -35,6 +35,27 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 ---
 
 ## ✨ Features
+
+## 🆕 What's New in 2.3.0
+
+### 🧠 Strategic LLM Automation with Temperature 0 Precision
+- **Revolutionary Strategic Analysis**: LLM now provides strategic reasoning for every automation task with temperature 0 for deterministic results
+- **Website Intelligence System**: Automatic detection and analysis of website contexts (e-commerce, educational, social media, etc.)
+- **Enhanced Multi-Step Automation**: Intelligent wait actions with proper page load detection and 5-second stability delays
+- **JSON Response Reliability**: Improved parsing to handle malformed LLM responses with HTML tags and token markers
+- **Advanced Action Planning**: Strategic automation intents with comprehensive risk assessment and next-step recommendations
+
+### 🎯 Enhanced Automation Capabilities
+- **Wait Action Support**: Proper `wait` action type handling for page loads and dynamic content
+- **Page Load Stability**: 5-second post-load delays ensure pages are fully interactive before actions
+- **Better Error Recovery**: Enhanced JSON parsing with fallback mechanisms for robust operation
+- **Strategic Command Analysis**: LLM analyzes user commands with website context to determine optimal automation approach
+
+### 🔧 Technical Improvements
+- **Temperature 0 LLM Configuration**: All automation requests use temperature 0 for consistent, deterministic responses
+- **Enhanced Token Limits**: Increased maxOutputTokens to 8000 for comprehensive strategic analysis
+- **Robust Response Parsing**: Multiple fallback methods for extracting content from various LLM provider response formats
+- **Optimized Content Processing**: Reduced HTML content limits to 50KB for faster processing while maintaining effectiveness
 
 ## 🆕 What's New in 2.2.6
 

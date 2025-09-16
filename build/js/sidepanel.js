@@ -2951,20 +2951,20 @@ When user asks for automation, the system will automatically find the best XPath
                               lowerMessage.includes('open') && (lowerMessage.includes('tab') || lowerMessage.includes('page'));
 
     // Check if page is restricted before attempting automation (except for navigation actions)
-    if (this.pageInfo && this.pageInfo.isRestricted && !isNavigationAction) {
-      const restrictionMessage = `❌ Automation not available: This is a ${this.getPageType(this.pageInfo.url)}. 
-
-Browser security restrictions prevent automation on:
-• Chrome internal pages (chrome://)
-• Extension pages (chrome-extension://)
-• Web stores (Chrome Web Store, Firefox Add-ons, etc.)
-• Browser settings pages
-
-Please navigate to a regular website to use automation features, or use navigation commands like "open new tab with [URL]".`;
-      
-      this.addMessage('assistant', restrictionMessage);
-      return;
-    }
+    // if (this.pageInfo && this.pageInfo.isRestricted && !isNavigationAction) {
+    //   const restrictionMessage = `❌ Automation not available: This is a ${this.getPageType(this.// pageInfo.url)}. 
+// 
+    //   Browser security restrictions prevent automation on:
+    //     • Chrome internal pages (chrome://)
+    //     • Extension pages (chrome-extension://)
+    //     • Web stores (Chrome Web Store, Firefox Add-ons, etc.)
+    //     • Browser settings pages
+    //         
+    //     Please navigate to a regular website to use automation features, or use navigation // commands like        "open new tab with [URL]".`;
+    //   
+    //   this.addMessage('assistant', restrictionMessage);
+    //   return;
+    // }
 
     // Show typing indicator
     const typingId = this.addTypingIndicator();

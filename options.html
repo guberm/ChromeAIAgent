@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ChromeAiAgent Options</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    label { display:block; margin-top:12px; }
+    input[type="number"] { width:120px; }
+  </style>
+</head>
+<body>
+  <h1>ChromeAiAgent - Automation Settings</h1>
+  <form id="optionsForm">
+    <label>
+      Poll timeout (ms):
+      <input id="pollTimeout" type="number" min="500" max="60000" step="100" />
+      <small>How long to wait after a click for navigation/new tab detection (ms). Default 5000.</small>
+    </label>
+    <label>
+      Poll interval (ms):
+      <input id="pollInterval" type="number" min="50" max="5000" step="50" />
+      <small>Polling frequency while waiting (ms). Default 300.</small>
+    </label>
+    <label>
+      Follow new tabs:
+      <input id="followNewTabs" type="checkbox" />
+    </label>
+    <label>
+      Open new tabs in foreground:
+      <input id="openInForeground" type="checkbox" />
+      <small>If checked, new tabs opened by automation will be made active.</small>
+    </label>
+    <label>
+      Follow-new-tab strategy:
+      <select id="followStrategy">
+        <option value="newest">Newest tab (default)</option>
+        <option value="first">First detected</option>
+        <option value="last">Last opened</option>
+      </select>
+    </label>
+    <label>
+      Follow-new-tab path keywords (comma-separated):
+      <input id="followKeywords" type="text" placeholder="results,checkout,search" />
+      <small>Prefer newly opened tabs whose path contains these keywords.</small>
+    </label>
+    <div id="keywordsPreview" style="font-size:0.9em;color:#333;margin-top:6px"></div>
+    <div style="margin-top:18px;">
+      <button id="saveBtn" type="button">Save</button>
+      <button id="resetBtn" type="button">Reset to defaults</button>
+      <span id="status" style="margin-left:12px;color:green"></span>
+    </div>
+    <div id="errors" style="color:red; margin-top:8px;"></div>
+    <hr />
+    <h3>Debug: Last selected tab</h3>
+    <div id="lastSelected" style="background:#f7f7f7;padding:8px;border-radius:4px;color:#222;min-height:40px">No selection recorded yet.</div>
+    <label style="margin-top:8px">
+      History size (max entries to keep):
+      <input id="historySize" type="number" min="1" max="500" step="1" style="width:80px" />
+      <small>Default 20.</small>
+    </label>
+    <div style="margin-top:8px;">
+      <button id="clearLastBtn" type="button">Clear last selection</button>
+    </div>
+    <h4 style="margin-top:12px">History</h4>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <input id="historySearch" type="text" placeholder="Search history (url,reason)" style="flex:1;padding:6px" />
+      <button id="exportHistoryBtn" type="button">Export history</button>
+      <button id="exportFileBtn" type="button">Download JSON</button>
+    </div>
+    <div id="lastSelectedHistory" style="background:#fff;padding:8px;border-radius:4px;color:#222;min-height:40px;max-height:220px;overflow:auto;margin-top:8px">No history yet.</div>
+  </form>
+
+  <script src="options.js"></script>
+</body>
+</html>

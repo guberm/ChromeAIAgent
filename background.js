@@ -1,4 +1,49 @@
-﻿// Background service worker for ChromeAiAgent
+﻿// Listen for LLM element match requests from content/page context
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  if (message && message.type === 'CHROMEAIAgent_LLM_ELEMENT_MATCH') {
+    try {
+      // Get aiSettings from storage
+      const settingsResult = await chrome.storage.sync.get(['aiSettings']);
+      const aiSettings = settingsResult.aiSettings;
+      if (!aiSettings || !aiSettings.host || !aiSettings.apiKey) {
+        sendResponse({ error: 'No LLM settings found' });
+        return true;
+      }
+      // Compose prompt for element matching
+      const prompt = `Given the following HTML, return the best selector or XPath for the user command.\n\nUser command: ${message.command}\n\nHTML:\n${message.html}`;
+      const response = await fetch(aiSettings.host, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${aiSettings.apiKey}`
+        },
+        body: JSON.stringify({
+          model: aiSettings.model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 4000
+        })
+      });
+      const data = await response.json();
+      // Expect LLM to return a JSON string with selector/xpath
+      let selector = null, xpath = null;
+      try {
+        const plan = JSON.parse(data.choices[0].message.content);
+        selector = plan.selector;
+        xpath = plan.xpath;
+      } catch (e) {
+        // fallback: try to extract selector/xpath from plain text
+        const txt = data.choices[0].message.content;
+        if (txt.includes('selector:')) selector = txt.split('selector:')[1].split(/\n|\r/)[0].trim();
+        if (txt.includes('xpath:')) xpath = txt.split('xpath:')[1].split(/\n|\r/)[0].trim();
+      }
+      sendResponse({ selector, xpath });
+    } catch (e) {
+      sendResponse({ error: e && e.message });
+    }
+    return true;
+  }
+});
+// Background service worker for ChromeAiAgent
 // Import MCP-compliant provider interface
 // Temporarily commented out to fix service worker registration
 // importScripts('mcp-provider-interface.js');
@@ -231,6 +276,23 @@ function pageAnalysisScript() {
       error: error.message,
       message: 'Page analysis failed'
     };
+  }
+}
+
+// Persist helper: store last selected tab(s) and keep a short history
+async function persistLastSelected(entry) {
+  try {
+    if (!chrome || !chrome.storage || !chrome.storage.local || !chrome.storage.local.get) return;
+    console.log('[Automation] persistLastSelected: storing entry', entry);
+    const data = await new Promise((resolve) => chrome.storage.local.get({ lastSelectedTabs: [], lastSelectedHistorySize: 20 }, resolve));
+    const arr = Array.isArray(data.lastSelectedTabs) ? data.lastSelectedTabs : [];
+    const maxSize = Number(data.lastSelectedHistorySize) || 20;
+    arr.push(entry);
+    while (arr.length > maxSize) arr.shift();
+    const payload = { lastSelectedTabs: arr, lastSelectedTab: entry };
+    chrome.storage.local.set(payload, () => { try { console.log('[Automation] persistLastSelected: saved payload length=', arr.length); } catch(e) {} });
+  } catch (e) {
+    console.warn('persistLastSelected failed:', e && e.message);
   }
 }
 
@@ -963,21 +1025,54 @@ function automationContentScript(action, params) {
     };
 
     const automation = {
-      click: (selector) => {
-        const element = findElement(selector, 'click');
-        if (element) {
-          const elementInfo = getElementDescription(element, selector);
-          console.log('🤖 AUTOMATION: Clicking element:', elementInfo);
-          element.click();
-          return { 
-            success: true, 
-            action: 'clicked', 
-            element: selector, 
-            elementInfo: elementInfo,
-            message: `Clicked ${elementInfo.tagName}${elementInfo.id ? ' #' + elementInfo.id : ''}${elementInfo.text ? ' ("' + elementInfo.text.substring(0, 50) + '...")' : ''}`
-          };
+      click: (selector, xpath = null) => {
+        // Try XPath first if provided
+        let element = null;
+        if (xpath) {
+          try {
+            const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            if (result && result.singleNodeValue) {
+              element = result.singleNodeValue;
+              element.scrollIntoView({behavior: 'smooth', block: 'center'});
+              element.focus();
+              element.click();
+              return {
+                success: true,
+                action: 'clicked',
+                element: selector,
+                elementInfo: getElementDescription(element, selector),
+                message: `Clicked by XPath: ${xpath}`,
+                method: 'xpath',
+                triedXPath: true
+              };
+            }
+          } catch (e) {
+            // fallback to selector
+          }
         }
-        return { success: false, error: 'Element not found' };
+        // Fallback to selector-based logic
+        element = findElement(selector, 'click');
+        if (!element) return { success: false, error: 'Element not found' };
+        const elementInfo = getElementDescription(element, selector);
+        console.log('🤖 AUTOMATION: Clicking element (browser-only):', elementInfo);
+        try {
+          element.scrollIntoView({behavior: 'smooth', block: 'center'});
+          element.focus();
+          element.click();
+          // Check if element is still present and visible
+          const stillVisible = element.offsetParent !== null;
+          return {
+            success: stillVisible,
+            action: 'clicked',
+            element: selector,
+            elementInfo,
+            message: `Clicked (browser-only) ${elementInfo.tagName}${elementInfo.id ? ' #' + elementInfo.id : ''}${elementInfo.text ? ' ("' + elementInfo.text.substring(0, 50) + '...")' : ''}`,
+            method: 'browser-only',
+            triedNative: true
+          };
+        } catch (e) {
+          return { success: false, error: 'Element click failed: ' + e.message };
+        }
       },
 
       type: (selector, text) => {
@@ -2537,6 +2632,112 @@ const chatLogger = new ChatLogger();
 
 // Browser Automation System
 class BrowserAutomation {
+  // LLM-driven automation: send page HTML and user command to LLM, receive plan, execute
+  async handleLLMAutomation(tabId, userCommand) {
+    // Get aiSettings
+    const settingsResult = await chrome.storage.sync.get(['aiSettings']);
+    const aiSettings = settingsResult.aiSettings;
+    if (!aiSettings || !aiSettings.host || !aiSettings.apiKey) throw new Error('No LLM settings found');
+    // Get page HTML
+    const [{ result: pageHTML }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.documentElement.innerHTML
+    });
+    // Compose prompt for LLM automation
+    const prompt = `You are an automation agent. Given the following HTML and user command, return a JSON plan of steps to automate the task.\n\nUser command: ${userCommand}\n\nHTML:\n${pageHTML}`;
+    const response = await fetch(aiSettings.host, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${aiSettings.apiKey}`
+      },
+      body: JSON.stringify({
+        model: aiSettings.model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 4000
+      })
+    });
+    const data = await response.json();
+    let plan = null;
+    try {
+      plan = JSON.parse(data.choices[0].message.content);
+    } catch (e) {
+      throw new Error('LLM did not return valid JSON plan: ' + (e && e.message));
+    }
+    // Execute plan: for each step, inject and perform action
+    for (const step of plan.steps || []) {
+      if (step.action === 'click' && (step.selector || step.xpath)) {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (sel, xp) => {
+            let el = null;
+            if (sel) try { el = document.querySelector(sel); } catch(e) {}
+            if (!el && xp) try { el = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch(e) {}
+            if (el && el.offsetParent !== null) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.focus();
+              const rect = el.getBoundingClientRect();
+              const opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2 };
+              el.dispatchEvent(new PointerEvent('pointerover', opts));
+              el.dispatchEvent(new MouseEvent('mouseover', opts));
+              el.dispatchEvent(new PointerEvent('pointerenter', opts));
+              el.dispatchEvent(new MouseEvent('mouseenter', opts));
+              el.dispatchEvent(new PointerEvent('pointerdown', opts));
+              el.dispatchEvent(new MouseEvent('mousedown', opts));
+              el.dispatchEvent(new PointerEvent('pointerup', opts));
+              el.dispatchEvent(new MouseEvent('mouseup', opts));
+              el.dispatchEvent(new MouseEvent('click', opts));
+              return { success: true };
+            }
+            return { success: false, error: 'Element not found or not visible' };
+          },
+          args: [step.selector, step.xpath]
+        });
+        // LLM-based post-click verification
+        // Get updated page HTML
+        const [{ result: updatedHTML }] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => document.documentElement.innerHTML
+        });
+        // Compose verification prompt
+        const verifyPrompt = `After the following click action, did the page state change as intended?\n\nUser command: ${userCommand}\n\nHTML after click:\n${updatedHTML}\n\nRespond with a JSON object: { "success": true/false, "reason": "..." }`;
+        const response = await fetch(aiSettings.host, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${aiSettings.apiKey}`
+          },
+          body: JSON.stringify({
+            model: aiSettings.model,
+            messages: [{ role: 'user', content: verifyPrompt }],
+            max_tokens: 1000
+          })
+        });
+        const data = await response.json();
+        let verifyResult = null;
+        try {
+          verifyResult = JSON.parse(data.choices[0].message.content);
+        } catch (e) {
+          throw new Error('LLM did not return valid JSON for click verification: ' + (e && e.message));
+        }
+        if (!verifyResult || !verifyResult.success) {
+          throw new Error('LLM did not confirm click success: ' + (verifyResult && verifyResult.reason));
+        }
+      } else if (step.action === 'type' && step.selector && step.value) {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (sel, value) => {
+            const el = document.querySelector(sel);
+            if (el) { el.focus(); el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); return { success: true }; }
+            return { success: false, error: 'Input not found' };
+          },
+          args: [step.selector, step.value]
+        });
+      }
+      // Add more action types as needed (scroll, select, etc.)
+    }
+    return { success: true, plan };
+  }
   constructor() {
     this.commands = {
       click: this.handleClick.bind(this),
@@ -2562,6 +2763,81 @@ class BrowserAutomation {
     this.commandParser = new AICommandParser();
     this.aiPlanner = new AICommandPlanner();
     this.actionPlanner = new ActionPlanner();
+
+    // Configurable automation settings (can be overridden via chrome.storage.local)
+  this.clickPollTimeoutMs = 10000; // how long to poll after a click for tab/url changes (increased default)
+    this.clickPollIntervalMs = 300; // poll interval
+  this.followNewTabs = true; // whether to automatically switch to newly opened tabs and continue automation
+  this.followNewTabsStrategy = 'newest'; // 'newest' | 'first' | 'last'
+  // Whether to open sequential URLs in the foreground (active) or background
+  // Default: true to preserve current behavior (improves reliability on lazy-rendered pages)
+  this.openTabsInForeground = true;
+  // Keywords to prefer in newly opened tab paths when multiple tabs are created
+  this.followNewTabsMatchKeywords = ['results','checkout','search','confirm','order','payment'];
+
+    // Load overrides from storage if present
+    try {
+        chrome.storage && chrome.storage.local && chrome.storage.local.get(
+        {
+          automationPollTimeoutMs: this.clickPollTimeoutMs,
+          automationPollIntervalMs: this.clickPollIntervalMs,
+          followNewTabs: this.followNewTabs,
+          followNewTabsStrategy: this.followNewTabsStrategy,
+          openTabsInForeground: this.openTabsInForeground
+        },
+        (items) => {
+          try {
+            if (items && typeof items.automationPollTimeoutMs === 'number') this.clickPollTimeoutMs = items.automationPollTimeoutMs;
+            if (items && typeof items.automationPollIntervalMs === 'number') this.clickPollIntervalMs = items.automationPollIntervalMs;
+              if (items && typeof items.followNewTabs === 'boolean') this.followNewTabs = items.followNewTabs;
+                if (items && typeof items.followNewTabsStrategy === 'string') this.followNewTabsStrategy = items.followNewTabsStrategy;
+                if (items && typeof items.openTabsInForeground === 'boolean') this.openTabsInForeground = items.openTabsInForeground;
+              if (items && Array.isArray(items.followNewTabsMatchKeywords)) this.followNewTabsMatchKeywords = items.followNewTabsMatchKeywords;
+            console.log('[Automation Config] clickPollTimeoutMs=', this.clickPollTimeoutMs, 'clickPollIntervalMs=', this.clickPollIntervalMs, 'followNewTabs=', this.followNewTabs, 'strategy=', this.followNewTabsStrategy);
+          } catch (e) {
+            console.warn('Failed to apply automation config overrides:', e && e.message);
+          }
+        }
+      );
+    } catch (e) {
+      // storage may not be available in some contexts
+      console.warn('chrome.storage not available to load automation settings:', e && e.message);
+    }
+
+    // Listen for runtime changes to settings so updates apply without needing service worker reload
+    try {
+      if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChanged.addListener === 'function') {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area !== 'local') return;
+          if (changes.automationPollTimeoutMs && typeof changes.automationPollTimeoutMs.newValue === 'number') {
+            this.clickPollTimeoutMs = changes.automationPollTimeoutMs.newValue;
+            console.log('[Automation Config] updated clickPollTimeoutMs=', this.clickPollTimeoutMs);
+          }
+          if (changes.automationPollIntervalMs && typeof changes.automationPollIntervalMs.newValue === 'number') {
+            this.clickPollIntervalMs = changes.automationPollIntervalMs.newValue;
+            console.log('[Automation Config] updated clickPollIntervalMs=', this.clickPollIntervalMs);
+          }
+          if (changes.followNewTabs && typeof changes.followNewTabs.newValue === 'boolean') {
+            this.followNewTabs = changes.followNewTabs.newValue;
+            console.log('[Automation Config] updated followNewTabs=', this.followNewTabs);
+          }
+          if (changes.followNewTabsStrategy && typeof changes.followNewTabsStrategy.newValue === 'string') {
+            this.followNewTabsStrategy = changes.followNewTabsStrategy.newValue;
+            console.log('[Automation Config] updated followNewTabsStrategy=', this.followNewTabsStrategy);
+          }
+          if (changes.openTabsInForeground && typeof changes.openTabsInForeground.newValue === 'boolean') {
+            this.openTabsInForeground = changes.openTabsInForeground.newValue;
+            console.log('[Automation Config] updated openTabsInForeground=', this.openTabsInForeground);
+          }
+          if (changes.followNewTabsMatchKeywords && Array.isArray(changes.followNewTabsMatchKeywords.newValue)) {
+            this.followNewTabsMatchKeywords = changes.followNewTabsMatchKeywords.newValue;
+            console.log('[Automation Config] updated followNewTabsMatchKeywords=', this.followNewTabsMatchKeywords);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('Could not attach storage change listener:', e && e.message);
+    }
   }
 
   async executeCommand(command, tabId) {
@@ -2706,6 +2982,15 @@ class BrowserAutomation {
 
   async executeAIPlan(command, tabId) {
     try {
+      // Check if this is a multi-URL sequential command
+      const urlPattern = /https?:\/\/[^\s]+/g;
+      const urls = command.match(urlPattern);
+      
+      if (urls && urls.length > 1 && command.toLowerCase().includes('one by one')) {
+        console.log('🔗 Multi-URL sequential command detected:', urls.length, 'URLs');
+        return await this.executeSequentialUrlAutomation(command, urls, tabId);
+      }
+      
       // Get page context for better planning
       const pageContext = await this.getPageContext(tabId);
       
@@ -2765,7 +3050,15 @@ class BrowserAutomation {
           }
 
           const result = await handler(step, currentTabId);
-          results.push({ success: true, step: step.description, result });
+          // Normalize result format
+          const stepSuccess = result && (result.success === true || result.success === undefined);
+          results.push({ success: stepSuccess, step: step.description, result });
+
+          // If a step failed, abort further execution to enforce strict sequence
+          if (!stepSuccess) {
+            console.error('Critical step failed, aborting remaining AI plan steps:', step.description, result);
+            break;
+          }
 
           // If the handler returns a new tabId (e.g., after newTab/newTabWithSearch), update currentTabId
           if (result && result.tabId && result.tabId !== currentTabId) {
@@ -2805,6 +3098,1256 @@ class BrowserAutomation {
     } catch (error) {
       console.error('AI plan execution failed:', error);
       throw error;
+    }
+  }
+
+  async executeSequentialUrlAutomation(command, urls, initialTabId) {
+    console.log('🔄 Starting sequential URL automation with', urls.length, 'URLs');
+    
+    // Analyze the command to understand what actions to perform
+    const automationIntent = this.analyzeAutomationIntent(command, urls);
+    console.log('🧠 Detected automation intent:', automationIntent);
+    
+    const results = [];
+    let currentTabId = initialTabId;
+    
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      console.log(`🌐 Processing URL ${i + 1}/${urls.length}: ${url}`);
+      
+      try {
+        // Open each URL in a new tab (background by default). This ensures strict ordering
+        // and avoids reusing the current tab (user expects new tabs for each URL).
+        // If you want the tab to open in foreground, set `active: true` or wire to settings.
+  // Use configured foreground/background behavior when opening sequential tabs
+  const openActive = !!this.openTabsInForeground;
+  const newTab = await chrome.tabs.create({ url: url, active: openActive });
+        currentTabId = newTab.id;
+        
+        // Wait for page to load
+        console.log('⏳ Waiting for page to load...');
+        await this.waitForPageLoad(currentTabId);
+        
+        // Wait an additional moment for dynamic content
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Perform automation actions based on detected intent
+        let automationResult;
+        if (automationIntent.actions.length > 0) {
+          console.log(`🤖 Performing ${automationIntent.actions.length} automation actions on page...`);
+          automationResult = await this.performDynamicAutomation(currentTabId, automationIntent, url);
+        } else {
+          // Just navigation if no specific actions detected
+          automationResult = {
+            success: true,
+            details: 'Successfully navigated to page'
+          };
+        }
+        
+        results.push({
+          url: url,
+          success: automationResult.success,
+          action: automationIntent.type || 'navigation',
+          details: automationResult.details || automationResult.error
+        });
+
+        // Log result but continue with remaining URLs (don't break the sequence)
+        if (!automationResult.success) {
+          console.warn('⚠️ Automation failed for URL, but continuing with remaining URLs:', url);
+          console.warn('⚠️ Error details:', automationResult.details || automationResult.error);
+        } else {
+          console.log(`✅ Completed processing URL ${i + 1}: ${url}`);
+        }
+        
+        // Brief pause between URLs to avoid overwhelming the browser
+        if (i < urls.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+      } catch (error) {
+        console.error(`❌ Error processing URL ${i + 1} (${url}):`, error);
+        results.push({
+          url: url,
+          success: false,
+          action: 'error',
+          details: error.message
+        });
+        // Continue with next URL instead of breaking
+        console.log('🔄 Continuing with next URL despite error...');
+      }
+    }
+    
+    // Summary
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+    
+    console.log(`🎯 Sequential automation completed: ${successful} successful, ${failed} failed`);
+    
+    return {
+      success: true,
+      type: 'sequential-url-automation',
+      intent: automationIntent,
+      totalUrls: urls.length,
+      successful: successful,
+      failed: failed,
+      results: results,
+      message: `Processed ${urls.length} URLs: ${successful} successful, ${failed} failed`
+    };
+  }
+
+  analyzeAutomationIntent(command, urls) {
+    // Enhanced intent structure with website context analysis
+    const intent = {
+      type: 'strategic_automation_task',
+      originalCommand: command,
+      urls: urls,
+      // Strategic LLM analysis with temperature 0 for precision
+      actions: ['strategic_llm_analysis'],
+      keywords: this.extractKeywordsFromCommand(command),
+      waitConditions: this.extractWaitConditionsFromCommand(command),
+      // Add website context for each URL
+      websiteContexts: urls ? urls.map(url => {
+        const domain = this.extractDomain(url);
+        return {
+          url: url,
+          domain: domain,
+          context: this.analyzeWebsiteContext(domain, '', '') // Will be enhanced with page content later
+        };
+      }) : [],
+      automationStrategy: 'temperature-0-strategic-reasoning'
+    };
+    
+    console.log('🧠 Strategic automation intent analyzed:', intent);
+    return intent;
+  }
+
+  extractKeywordsFromCommand(command) {
+    // Simple keyword extraction without domain-specific logic
+    const keywords = [];
+    const keywordPatterns = [
+      /["']([^"']+)["']/g, // Text in quotes
+      /(?:click|нажать|hacer\s*clic|cliquer|cliccare|klicken)\s+(?:on\s+)?(?:the\s+)?([^,.\n]+)/gi,
+      /(?:find|найти|найти\s*и\s*нажать|buscar|chercher|trovare|finden)\s+([^,.\n]+)/gi
+    ];
+    
+    keywordPatterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(command)) !== null) {
+        if (match[1] && match[1].trim().length > 2) {
+          keywords.push(match[1].trim());
+        }
+      }
+    });
+    
+    return keywords;
+  }
+
+  extractWaitConditionsFromCommand(command) {
+    const lowerCommand = command.toLowerCase();
+    const waitConditions = [];
+    
+    if (/wait|ждать|подождать|esperar|attendre|aspettare|warten/i.test(lowerCommand)) {
+      waitConditions.push('wait_for_load');
+    }
+    
+    if (/loading|загрузка|cargando|chargement|caricamento|laden/i.test(lowerCommand)) {
+      waitConditions.push('wait_for_page_load');
+    }
+    
+    return waitConditions;
+  }
+
+  async performDynamicAutomation(tabId, intent, url) {
+    try {
+      console.log('🎯 Starting LLM-driven automation on:', url);
+      console.log('🎯 User intent:', intent);
+      
+      // Extract page content for LLM analysis
+      const pageContent = await this.getPageHTMLForLLM(tabId);
+      if (!pageContent) {
+        console.error('❌ Page content extraction failed for tab:', tabId);
+        return {
+          success: false,
+          details: 'Could not extract page content for analysis'
+        };
+      }
+      
+      console.log('📄 Page content extracted:', {
+        title: pageContent.title,
+        interactiveElements: pageContent.interactiveElements?.length || 0,
+        url: url
+      });
+      
+      // Create automation prompt for LLM
+      const prompt = this.createAutomationPrompt(intent, pageContent, url);
+      console.log('🤖 Created automation prompt, length:', prompt.length);
+      
+      // Query LLM for automation analysis
+      console.log('🤖 Sending request to LLM...');
+      const llmResponse = await this.queryLLMForAutomation(prompt);
+      
+      if (!llmResponse) {
+        console.error('❌ LLM returned null response');
+        return {
+          success: false,
+          details: 'LLM query failed or returned null response'
+        };
+      }
+      
+      if (!llmResponse.actions || llmResponse.actions.length === 0) {
+        console.warn('⚠️ LLM response has no actions:', llmResponse);
+        return {
+          success: false,
+          details: 'LLM could not identify any suitable actions for this page'
+        };
+      }
+      
+      console.log('🤖 LLM identified actions:', llmResponse.actions);
+      
+      // Execute the actions identified by LLM
+      let executionResults = [];
+      let anySuccess = false;
+      
+      for (const action of llmResponse.actions) {
+        if (action.priority === 'high' || action.priority === 'medium') {
+          console.log(`🎯 Executing ${action.priority} priority action:`, action);
+          
+          const result = await this.executeLLMAction(action, tabId);
+          executionResults.push({
+            action: action,
+            result: result
+          });
+          
+          if (result.success) {
+            anySuccess = true;
+            console.log('✅ Action executed successfully:', result);
+            
+            // Check if user command requires follow-up actions (wait and click again)
+            if (intent.originalCommand && this.requiresFollowUpAction(intent.originalCommand)) {
+              console.log('🔄 User command requires follow-up actions, waiting for page to load...');
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              // Query LLM again for follow-up actions
+              try {
+                const followUpResult = await this.queryLLMForFollowUpActions(tabId, intent.originalCommand);
+                if (followUpResult && followUpResult.actions && followUpResult.actions.length > 0) {
+                  console.log('🔄 LLM found follow-up actions:', followUpResult.actions);
+                  
+                  for (const followUpAction of followUpResult.actions) {
+                    if (followUpAction.priority === 'high' || followUpAction.priority === 'medium') {
+                      const followUpExecutionResult = await this.executeLLMAction(followUpAction, tabId);
+                      executionResults.push({
+                        action: { ...followUpAction, type: 'follow-up-' + followUpAction.type },
+                        result: followUpExecutionResult
+                      });
+                      
+                      if (followUpExecutionResult.success) {
+                        console.log('✅ Follow-up action successful:', followUpExecutionResult);
+                      }
+                    }
+                  }
+                }
+              } catch (followUpError) {
+                console.log('ℹ️ No follow-up actions found:', followUpError.message);
+              }
+            }
+          } else {
+            console.log('❌ Action failed:', result);
+          }
+        }
+      }
+      
+      return {
+        success: anySuccess,
+        details: anySuccess ? 
+          `Strategic LLM automation completed. Executed ${executionResults.filter(r => r.result.success).length} successful actions.` :
+          `Strategic LLM automation failed. No actions could be executed successfully.`,
+        llmReasoning: llmResponse.reasoning,
+        strategicAnalysis: llmResponse.strategic_analysis,
+        riskAssessment: llmResponse.risk_assessment,
+        nextSteps: llmResponse.next_steps,
+        actionsAttempted: executionResults.length,
+        actionsSuccessful: executionResults.filter(r => r.result.success).length,
+        executionResults: executionResults,
+        websiteContext: intent.websiteContext, // Include website intelligence in results
+        automationStrategy: 'temperature-0-strategic-analysis'
+      };
+      
+    } catch (error) {
+      console.error('❌ LLM automation failed:', error);
+      return {
+        success: false,
+        details: `LLM automation error: ${error.message}`,
+        error: error.message
+      };
+    }
+  }
+
+  requiresFollowUpAction(command) {
+    // Check if command indicates multiple actions or waiting
+    const lowerCommand = command.toLowerCase();
+    return (
+      /wait.*click|click.*wait/i.test(lowerCommand) ||
+      /click.*again|again.*click/i.test(lowerCommand) ||
+      /then.*click|click.*then/i.test(lowerCommand) ||
+      /after.*click|click.*after/i.test(lowerCommand) ||
+      /loading.*click|click.*loading/i.test(lowerCommand)
+    );
+  }
+
+  async queryLLMForFollowUpActions(tabId, originalCommand) {
+    try {
+      // Get updated page content after the first action
+      const pageContent = await this.getPageHTMLForLLM(tabId);
+      if (!pageContent) {
+        throw new Error('Could not extract updated page content');
+      }
+
+      const prompt = `You are analyzing a web page after a user action was performed. The user's original command was: "${originalCommand}"
+
+The page may have changed and there might be additional actions needed to complete the user's request.
+
+UPDATED PAGE HTML CONTENT:
+${pageContent.innerHTML}
+
+TASK: Check if there are any additional actions needed to complete the user's original command. Look for:
+- New buttons that appeared after the first action
+- Loading states that finished
+- Additional steps in a process
+- Confirmation buttons
+- Continue/Next buttons
+
+Return a JSON response with this format:
+
+{
+  "actions": [
+    {
+      "type": "click",
+      "element_text": "exact text of element to click",
+      "selector": "CSS selector or xpath for the element", 
+      "reason": "why this element is needed to complete the original command",
+      "priority": "high|medium|low"
+    }
+  ],
+  "reasoning": "explanation of what follow-up actions are needed"
+}
+
+If no additional actions are needed, return an empty actions array.`;
+
+      return await this.queryLLMForAutomation(prompt);
+    } catch (error) {
+      console.error('❌ Follow-up LLM query failed:', error);
+      throw error;
+    }
+  }
+
+  fixCommonJsonIssues(jsonString) {
+    try {
+      // Remove any HTML-like tags or token markers at the beginning
+      jsonString = jsonString.replace(/^(<s>|<\/s>|<\w+>|<\/\w+>|\s)+/g, '');
+      jsonString = jsonString.replace(/(<s>|<\/s>|<\w+>|<\/\w+>|\s)+$/g, '');
+      
+      // Remove trailing commas before closing brackets/braces
+      jsonString = jsonString.replace(/,(\s*[}\]])/g, '$1');
+      
+      // Fix incomplete strings by adding missing quotes
+      jsonString = jsonString.replace(/:\s*([^",}\]\s][^",}\]]*)\s*([,}\]])/g, ': "$1"$2');
+      
+      // Fix incomplete JSON by closing missing braces/brackets
+      let openBraces = (jsonString.match(/\{/g) || []).length;
+      let closeBraces = (jsonString.match(/\}/g) || []).length;
+      let openBrackets = (jsonString.match(/\[/g) || []).length;
+      let closeBrackets = (jsonString.match(/\]/g) || []).length;
+      
+      // Add missing closing braces
+      while (closeBraces < openBraces) {
+        jsonString += '}';
+        closeBraces++;
+      }
+      
+      // Add missing closing brackets
+      while (closeBrackets < openBrackets) {
+        jsonString += ']';
+        closeBrackets++;
+      }
+      
+      return jsonString;
+    } catch (error) {
+      console.warn('❌ Could not fix JSON issues:', error);
+      return jsonString;
+    }
+  }
+
+  extractFallbackAction(responseContent) {
+    try {
+      // Extract button text and selector from the response even if JSON is malformed
+      const buttonTextMatch = responseContent.match(/"element_text":\s*"([^"]+)"/);
+      const selectorMatch = responseContent.match(/"selector":\s*"([^"]+)"/);
+      const reasonMatch = responseContent.match(/"reason":\s*"([^"]+)"/);
+      
+      if (buttonTextMatch && selectorMatch) {
+        return {
+          type: "click",
+          element_text: buttonTextMatch[1],
+          selector: selectorMatch[1],
+          reason: reasonMatch ? reasonMatch[1] : "Fallback extraction",
+          priority: "high"
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      console.warn('❌ Fallback action extraction failed:', error);
+      return null;
+    }
+  }
+
+  // NEW LLM HELPER METHODS
+  async getPageHTMLForLLM(tabId) {
+    try {
+      console.log('🔍 Starting page content extraction for tab:', tabId);
+      
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: () => {
+          try {
+            // Simple and robust approach - just get the innerHTML for LLM analysis
+            const title = document.title || 'No title';
+            const url = window.location.href || 'Unknown URL';
+            
+            // Get the main page content as innerHTML
+            const body = document.body;
+            if (!body) {
+              return {
+                title: title,
+                url: url,
+                innerHTML: 'No body element found',
+                elementsFound: 0
+              };
+            }
+            
+            // Get the full innerHTML but limit it to prevent memory issues
+            let innerHTML = body.innerHTML || '';
+            
+            // Limit HTML content to reasonable size for LLM processing
+            const maxLength = 50000; // Reduced to 50KB for faster LLM automation processing
+            if (innerHTML.length > maxLength) {
+              innerHTML = innerHTML.substring(0, maxLength) + '\n\n[Content truncated for LLM automation efficiency]';
+            }
+            
+            // Count interactive elements for debugging
+            const buttons = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]').length;
+            const links = document.querySelectorAll('a[href]').length;
+            const elementsFound = buttons + links;
+            
+            return {
+              title: title,
+              url: url,
+              innerHTML: innerHTML,
+              elementsFound: elementsFound,
+              buttonsFound: buttons,
+              linksFound: links
+            };
+          } catch (error) {
+            return {
+              title: 'Error extracting content',
+              url: window.location.href || 'Unknown',
+              innerHTML: 'Error: ' + error.message,
+              elementsFound: 0,
+              error: error.message
+            };
+          }
+        }
+      });
+      
+      console.log('🔍 Script execution result:', result);
+      
+      const pageContent = result?.[0]?.result;
+      if (pageContent && pageContent.innerHTML && pageContent.innerHTML.length > 0) {
+        console.log('✅ Page content extracted successfully:', {
+          title: pageContent.title,
+          url: pageContent.url,
+          htmlLength: pageContent.innerHTML.length,
+          elementsFound: pageContent.elementsFound,
+          buttonsFound: pageContent.buttonsFound,
+          linksFound: pageContent.linksFound
+        });
+        return pageContent;
+      } else {
+        console.error('❌ Page content extraction returned invalid result:', pageContent);
+        return null;
+      }
+    } catch (error) {
+      console.error('❌ Could not extract page HTML for LLM:', error);
+      console.error('❌ Error details:', error.message, error.stack);
+      return null;
+    }
+  }
+
+  createAutomationPrompt(intent, pageContent, pageUrl) {
+    const commandText = intent.originalCommand || intent.type || 'automation task';
+    
+    // Extract domain for website-specific intelligence
+    const domain = this.extractDomain(pageUrl);
+    const websiteContext = this.analyzeWebsiteContext(domain, pageContent.title, pageContent.innerHTML);
+    
+    return `You are an advanced web automation strategist with deep understanding of website patterns and user intent. Analyze the situation with precision and strategic thinking.
+
+## MISSION ANALYSIS
+**User Command**: "${commandText}"
+**Target Website**: ${pageUrl} (Domain: ${domain})
+**Page Title**: ${pageContent.title}
+**Available Elements**: ${pageContent.elementsFound} interactive elements (${pageContent.buttonsFound} buttons, ${pageContent.linksFound} links)
+
+## WEBSITE CONTEXT ANALYSIS
+${websiteContext.analysis}
+
+**Website Type**: ${websiteContext.type}
+**Common Patterns**: ${websiteContext.patterns.join(', ')}
+**Expected User Flows**: ${websiteContext.userFlows.join(', ')}
+
+## STRATEGIC THINKING PROCESS
+Think through this step by step:
+
+1. **Command Intent Analysis**: 
+   - What is the user's ultimate goal?
+   - What type of action does this command indicate? (navigation, interaction, data entry, purchase, enrollment, etc.)
+   - Are there cultural or language nuances in the command?
+
+2. **Website Intelligence**:
+   - How does this type of website typically implement the requested functionality?
+   - What are the standard UI patterns for this domain/industry?
+   - Where would users typically find this functionality on this type of site?
+
+3. **Contextual Element Matching**:
+   - Which elements align with both the command intent AND website patterns?
+   - What are the most reliable selectors for this type of action on this domain?
+   - Are there multiple steps typically required for this type of action?
+
+4. **Risk Assessment**:
+   - Could this action have unintended consequences?
+   - Are there confirmation steps typically required?
+   - What would happen if the wrong element is clicked?
+
+## PAGE HTML CONTENT
+${pageContent.innerHTML}
+
+## STRATEGIC AUTOMATION PLAN
+Based on your analysis, provide a detailed automation strategy. Consider:
+
+- **Primary Action**: The most direct element to accomplish the user's goal
+- **Fallback Options**: Alternative elements if the primary fails
+- **Context Validation**: How to verify we're taking the right action
+- **Next Steps**: What typically happens after this action on this type of site
+
+Return a JSON response with this EXACT format:
+
+{
+  "strategic_analysis": {
+    "command_intent": "detailed analysis of what the user wants to accomplish",
+    "website_intelligence": "insights about how this type of site works",
+    "recommended_approach": "strategic reasoning for the chosen approach"
+  },
+  "actions": [
+    {
+      "type": "click|type|select|submit|wait",
+      "element_text": "exact text content of the element",
+      "selector": "most reliable CSS selector or xpath",
+      "reason": "detailed explanation connecting user intent + website patterns + element analysis",
+      "priority": "high|medium|low",
+      "confidence": "percentage confidence in this action",
+      "validation_criteria": "how to verify this action was successful",
+      "expected_outcome": "what should happen after this action"
+    }
+  ],
+  "reasoning": "comprehensive strategic analysis of your decision-making process",
+  "risk_assessment": "potential issues and how to mitigate them",
+  "next_steps": "what actions might be needed after this one"
+}
+
+## CRITICAL REQUIREMENTS
+- Use TEMPERATURE 0 thinking: Be precise, deterministic, and analytical
+- Prioritize reliability over speed
+- Consider the full user journey, not just the immediate action
+- Account for website-specific patterns and behaviors
+- Provide detailed reasoning for all decisions
+- Think like an expert who understands both automation and user experience
+
+Execute your analysis with maximum precision and strategic depth.`;
+  }
+
+  // Helper methods for intelligent website context analysis
+  extractDomain(url) {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname.replace(/^www\./, '').toLowerCase();
+    } catch (error) {
+      return 'unknown-domain';
+    }
+  }
+
+  analyzeWebsiteContext(domain, title, htmlContent) {
+    const context = {
+      type: 'unknown',
+      patterns: [],
+      userFlows: [],
+      analysis: ''
+    };
+
+    // Analyze domain and content to understand website type and patterns
+    const lowerDomain = domain.toLowerCase();
+    const lowerTitle = (title || '').toLowerCase();
+    const lowerContent = (htmlContent || '').toLowerCase();
+
+    // E-commerce sites
+    if (this.isEcommerceSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'e-commerce';
+      context.patterns = ['add to cart', 'buy now', 'checkout', 'product pages', 'shopping cart'];
+      context.userFlows = ['browse → select → add to cart → checkout', 'search → filter → purchase'];
+      context.analysis = 'E-commerce platform detected. Users typically browse products, add items to cart, and proceed through checkout flow. Look for standard e-commerce UI patterns.';
+    }
+    // Educational/Course sites
+    else if (this.isEducationalSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'educational';
+      context.patterns = ['enroll', 'start course', 'join class', 'learn more', 'course catalog'];
+      context.userFlows = ['browse courses → view details → enroll', 'search → filter → select course'];
+      context.analysis = 'Educational platform detected. Users typically browse course catalogs, view course details, and enroll in programs. Look for enrollment and learning-related UI elements.';
+    }
+    // Social media sites
+    else if (this.isSocialMediaSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'social-media';
+      context.patterns = ['post', 'share', 'like', 'follow', 'message', 'profile'];
+      context.userFlows = ['create content → post', 'browse → interact', 'connect → message'];
+      context.analysis = 'Social media platform detected. Users typically create/share content, interact with posts, and connect with others. Look for social interaction UI patterns.';
+    }
+    // Video streaming sites
+    else if (this.isVideoStreamingSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'video-streaming';
+      context.patterns = ['play', 'watch', 'subscribe', 'playlist', 'video player'];
+      context.userFlows = ['search → select video → play', 'browse → discover → watch'];
+      context.analysis = 'Video streaming platform detected. Users typically search for content, select videos to watch, and manage playlists. Look for video player and content discovery UI patterns.';
+    }
+    // Professional/Job sites
+    else if (this.isProfessionalSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'professional';
+      context.patterns = ['apply', 'connect', 'network', 'profile', 'job search'];
+      context.userFlows = ['search jobs → apply', 'build profile → network', 'connect → message'];
+      context.analysis = 'Professional networking platform detected. Users typically manage profiles, search for opportunities, and build professional connections. Look for career-focused UI patterns.';
+    }
+    // Search engines
+    else if (this.isSearchEngine(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'search-engine';
+      context.patterns = ['search', 'query', 'results', 'filters', 'suggestions'];
+      context.userFlows = ['enter query → search → refine results', 'browse suggestions → select'];
+      context.analysis = 'Search engine detected. Users typically enter search queries, refine results with filters, and navigate to relevant content. Look for search-focused UI patterns.';
+    }
+    // News/Media sites
+    else if (this.isNewsMediaSite(lowerDomain, lowerTitle, lowerContent)) {
+      context.type = 'news-media';
+      context.patterns = ['read article', 'subscribe', 'share', 'comment', 'newsletter'];
+      context.userFlows = ['browse articles → read', 'search topics → read', 'subscribe → newsletters'];
+      context.analysis = 'News/media site detected. Users typically browse articles, read content, and engage with news. Look for content consumption and subscription UI patterns.';
+    }
+    // Default for unknown sites
+    else {
+      context.type = 'general-website';
+      context.patterns = ['navigation', 'content interaction', 'forms', 'buttons', 'links'];
+      context.userFlows = ['navigate → find content → interact', 'search → discover → engage'];
+      context.analysis = 'General website detected. Analyze page structure and content to understand specific user flows and interaction patterns for this particular site.';
+    }
+
+    return context;
+  }
+
+  isEcommerceSite(domain, title, content) {
+    const ecommerceKeywords = ['shop', 'store', 'buy', 'cart', 'checkout', 'product', 'price', 'order', 'payment'];
+    const ecommerceDomains = ['amazon', 'ebay', 'shopify', 'etsy', 'walmart', 'target', 'bestbuy'];
+    
+    return ecommerceDomains.some(d => domain.includes(d)) ||
+           ecommerceKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  isEducationalSite(domain, title, content) {
+    const eduKeywords = ['course', 'learn', 'education', 'study', 'class', 'lesson', 'tutorial', 'training'];
+    const eduDomains = ['udemy', 'coursera', 'edx', 'khan', 'skillshare', 'pluralsight', 'lynda'];
+    
+    return eduDomains.some(d => domain.includes(d)) ||
+           eduKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  isSocialMediaSite(domain, title, content) {
+    const socialKeywords = ['social', 'post', 'share', 'follow', 'friend', 'timeline', 'feed'];
+    const socialDomains = ['facebook', 'twitter', 'instagram', 'linkedin', 'tiktok', 'snapchat', 'reddit'];
+    
+    return socialDomains.some(d => domain.includes(d)) ||
+           socialKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  isVideoStreamingSite(domain, title, content) {
+    const videoKeywords = ['video', 'watch', 'stream', 'play', 'channel', 'subscribe'];
+    const videoDomains = ['youtube', 'netflix', 'hulu', 'twitch', 'vimeo', 'dailymotion'];
+    
+    return videoDomains.some(d => domain.includes(d)) ||
+           videoKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  isProfessionalSite(domain, title, content) {
+    const professionalKeywords = ['career', 'job', 'professional', 'network', 'resume', 'hire'];
+    const professionalDomains = ['linkedin', 'indeed', 'glassdoor', 'monster', 'ziprecruiter'];
+    
+    return professionalDomains.some(d => domain.includes(d)) ||
+           professionalKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  isSearchEngine(domain, title, content) {
+    const searchDomains = ['google', 'bing', 'yahoo', 'duckduckgo', 'baidu'];
+    const searchKeywords = ['search', 'results', 'query'];
+    
+    return searchDomains.some(d => domain.includes(d)) ||
+           (searchKeywords.some(k => title.includes(k)) && content.includes('search'));
+  }
+
+  isNewsMediaSite(domain, title, content) {
+    const newsKeywords = ['news', 'article', 'breaking', 'headlines', 'story', 'journalism'];
+    const newsDomains = ['cnn', 'bbc', 'reuters', 'nytimes', 'washingtonpost', 'guardian'];
+    
+    return newsDomains.some(d => domain.includes(d)) ||
+           newsKeywords.some(k => title.includes(k) || content.includes(k));
+  }
+
+  async queryLLMForAutomation(prompt) {
+    try {
+      // Use the same LLM settings as configured in the extension
+      const mcpRequest = {
+        action: 'queryLLM',
+        prompt: prompt,
+        timestamp: Date.now()
+      };
+      
+      console.log('🤖 Querying LLM for automation analysis...');
+      
+      // Send to MCP for LLM processing using extension's configured provider
+      if (this.mcpInitialized && this.mcpLogger) {
+        try {
+          this.mcpLogger.debug('Automation LLM query', mcpRequest);
+        } catch (e) {
+          console.warn('MCP logging failed:', e);
+        }
+      }
+      
+      // Get LLM response using the extension's provider settings
+      console.log('🤖 Calling sendLLMRequest...');
+      const response = await this.sendLLMRequest(prompt);
+      console.log('🤖 LLM response received:', response);
+      
+      if (response && response.content) {
+        console.log('🤖 LLM Strategic Analysis Response Length:', response.content.length);
+        console.log('🤖 Response content preview:', response.content.substring(0, 500));
+        try {
+          // Try to parse JSON response with better error handling
+          let jsonContent = response.content;
+          
+          // Clean up any HTML-like tags or token markers first
+          jsonContent = jsonContent.replace(/^(<s>|<\/s>|<\w+>|<\/\w+>|\s)+/g, '');
+          jsonContent = jsonContent.replace(/(<s>|<\/s>|<\w+>|<\/\w+>|\s)+$/g, '');
+          
+          // First try to extract JSON from code blocks
+          const codeBlockMatch = jsonContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+          if (codeBlockMatch) {
+            console.log('🔍 Found JSON in code block, extracting...');
+            jsonContent = codeBlockMatch[1];
+            console.log('🔍 Extracted JSON from code block:', jsonContent.substring(0, 300));
+          }
+          
+          // Find the JSON object bounds more reliably
+          const jsonStart = jsonContent.indexOf('{');
+          const jsonEnd = jsonContent.lastIndexOf('}');
+          
+          console.log('🔍 JSON bounds - start:', jsonStart, 'end:', jsonEnd);
+          
+          if (jsonStart >= 0 && jsonEnd > jsonStart) {
+            let extractedJson = jsonContent.substring(jsonStart, jsonEnd + 1);
+            console.log('🔍 Extracted JSON length:', extractedJson.length);
+            console.log('🔍 Extracted JSON preview:', extractedJson.substring(0, 500));
+            
+            // Try to fix common JSON issues
+            extractedJson = this.fixCommonJsonIssues(extractedJson);
+            
+            console.log('🧠 Parsing strategic automation analysis...');
+            const parsed = JSON.parse(extractedJson);
+            
+            // Enhanced logging for strategic analysis
+            if (parsed.strategic_analysis) {
+              console.log('🎯 Strategic Analysis Completed:');
+              console.log('  • Command Intent:', parsed.strategic_analysis.command_intent);
+              console.log('  • Website Intelligence:', parsed.strategic_analysis.website_intelligence);
+              console.log('  • Recommended Approach:', parsed.strategic_analysis.recommended_approach);
+            }
+            
+            if (parsed.actions && parsed.actions.length > 0) {
+              console.log('🎯 Identified', parsed.actions.length, 'strategic actions:');
+              parsed.actions.forEach((action, index) => {
+                console.log(`  ${index + 1}. ${action.type.toUpperCase()}: "${action.element_text}" (${action.priority} priority, ${action.confidence}% confidence)`);
+                console.log(`     Reasoning: ${action.reason}`);
+                console.log(`     Expected: ${action.expected_outcome}`);
+              });
+            }
+            
+            if (parsed.risk_assessment) {
+              console.log('⚠️ Risk Assessment:', parsed.risk_assessment);
+            }
+            
+            if (parsed.next_steps) {
+              console.log('🔄 Next Steps:', parsed.next_steps);
+            }
+            
+            console.log('✅ Strategic automation analysis completed with temperature 0 precision');
+            return parsed;
+          } else {
+            console.warn('❌ No valid JSON bounds found in strategic analysis response');
+            console.warn('❌ JSON Start:', jsonStart, 'JSON End:', jsonEnd);
+            console.warn('❌ Content length:', jsonContent.length);
+            console.warn('❌ Content preview:', jsonContent.substring(0, 1000));
+          }
+        } catch (e) {
+          console.warn('❌ Could not parse strategic LLM JSON response:', e);
+          console.warn('❌ Response content was:', response.content);
+          
+          // Enhanced fallback for strategic analysis
+          try {
+            const fallbackAction = this.extractFallbackAction(response.content);
+            if (fallbackAction) {
+              console.log('🔄 Using fallback action extraction from strategic response:', fallbackAction);
+              return { 
+                actions: [fallbackAction], 
+                reasoning: "Fallback extraction from malformed strategic analysis response",
+                strategic_analysis: {
+                  command_intent: "Could not parse full strategic analysis",
+                  website_intelligence: "Fallback mode - basic element matching",
+                  recommended_approach: "Simple action execution as fallback"
+                }
+              };
+            }
+          } catch (fallbackError) {
+            console.warn('❌ Strategic analysis fallback extraction also failed:', fallbackError);
+          }
+        }
+      } else {
+        console.warn('❌ Strategic LLM analysis response missing content:', response);
+      }
+      
+      console.warn('❌ Invalid LLM response for automation');
+      return null;
+      
+    } catch (error) {
+      console.error('❌ LLM query failed:', error);
+      return null;
+    }
+  }
+
+  async sendLLMRequest(prompt) {
+    try {
+      // Use the same storage system as the main extension (chrome.storage.sync with aiSettings)
+      const result = await chrome.storage.sync.get(['aiSettings']);
+      const settings = result.aiSettings || {};
+      console.log('🔍 Main extension settings retrieved:', settings);
+      
+      const provider = settings.provider;
+      
+      console.log('🔍 Selected provider:', provider);
+      console.log('🔍 Provider settings object:', settings);
+      console.log('🔍 API Key present:', !!settings.apiKey);
+      console.log('🔍 Host configured:', settings.host);
+      console.log('🔍 Model configured:', settings.model);
+      
+      if (!provider) {
+        console.error('❌ No provider configured. Settings:', settings);
+        throw new Error('No provider configured for automation LLM');
+      }
+      
+      if (!settings.apiKey) {
+        console.error('❌ API key missing. Provider:', provider, 'Settings:', settings);
+        throw new Error('No API key configured for automation LLM');
+      }
+      
+      if (!settings.model) {
+        console.error('❌ Model not configured. Provider:', provider, 'Settings:', settings);
+        throw new Error('No model configured for automation LLM');
+      }
+      
+      const config = settings;
+      
+      // Use the configured host directly instead of hardcoding OpenAI
+      if (!config.host) {
+        throw new Error(`No API host configured for provider: ${provider}`);
+      }
+      
+      // Dynamic provider configuration - no hardcoding!
+      const providerConfig = this.getProviderConfig(provider);
+      
+      // Build request URL using provider-specific logic
+      const host = this.buildRequestURL(config, providerConfig);
+      
+      // Build headers using provider-specific authentication
+      const headers = this.buildRequestHeaders(config, providerConfig);
+      
+      // Build request body using provider-specific format
+      const requestBody = this.buildRequestBody(prompt, config, providerConfig);
+      
+      console.log('🔍 Final request URL:', host);
+      console.log('🤖 Making LLM request to provider:', provider, 'at host:', host);
+      
+      // Make API request to the configured provider's host
+      const response = await fetch(host, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`LLM API error: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Parse response using provider-specific logic
+      const parsedResponse = this.parseResponse(data, providerConfig);
+      return parsedResponse;
+      
+    } catch (error) {
+      console.error('❌ LLM request failed:', error);
+      throw error;
+    }
+  }
+
+  // Dynamic provider configuration methods
+  getProviderConfig(provider) {
+    // Define provider configurations without hardcoding
+    const configs = {
+      gemini: {
+        requestFormat: 'gemini',
+        authMethod: 'api-key-header',
+        authHeader: 'x-goog-api-key',
+        responseFormat: 'gemini',
+        urlRequiresModel: true,
+        endpointSuffix: ':generateContent'
+      },
+      openai: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      github: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      groq: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      deepseek: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      perplexity: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      openrouter: {
+        requestFormat: 'openai',
+        authMethod: 'bearer-token',
+        authHeader: 'Authorization',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      azure: {
+        requestFormat: 'openai',
+        authMethod: 'api-key-header',
+        authHeader: 'api-key',
+        responseFormat: 'openai',
+        urlRequiresModel: false
+      },
+      'claude.ai': {
+        requestFormat: 'anthropic',
+        authMethod: 'api-key-header',
+        authHeader: 'x-api-key',
+        responseFormat: 'anthropic',
+        urlRequiresModel: false
+      }
+    };
+    
+    // Return config for the provider, or default OpenAI-compatible config
+    return configs[provider] || configs.openai;
+  }
+
+  buildRequestURL(config, providerConfig) {
+    let host = config.host;
+    
+    // Handle URL template replacement for providers that embed model in URL
+    if (providerConfig.urlRequiresModel) {
+      if (host.includes('{model}')) {
+        host = host.replace('{model}', config.model);
+      } else if (providerConfig.endpointSuffix && !host.includes(providerConfig.endpointSuffix)) {
+        // Build proper endpoint from configured host and model
+        const baseHost = host.replace(/\/v1beta\/models.*$/, '');
+        host = `${baseHost}/v1beta/models/${config.model}${providerConfig.endpointSuffix}`;
+      }
+    }
+    
+    return host;
+  }
+
+  buildRequestHeaders(config, providerConfig) {
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    
+    // Add authentication header based on provider config
+    if (providerConfig.authMethod === 'bearer-token') {
+      headers[providerConfig.authHeader] = `Bearer ${config.apiKey}`;
+    } else if (providerConfig.authMethod === 'api-key-header') {
+      headers[providerConfig.authHeader] = config.apiKey;
+    }
+    
+    return headers;
+  }
+
+  buildRequestBody(prompt, config, providerConfig) {
+    if (providerConfig.requestFormat === 'gemini') {
+      return {
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }],
+        generationConfig: {
+          temperature: 0, // Use temperature 0 for precise, deterministic automation reasoning
+          maxOutputTokens: 8000 // Increased significantly to prevent truncation
+        }
+      };
+    } else if (providerConfig.requestFormat === 'anthropic') {
+      return {
+        model: config.model,
+        max_tokens: 8000, // Increased significantly to prevent truncation
+        temperature: 0, // Use temperature 0 for precise, deterministic automation reasoning
+        messages: [{
+          role: 'user',
+          content: prompt
+        }]
+      };
+    } else {
+      // Default OpenAI-compatible format
+      return {
+        model: config.model,
+        messages: [{
+          role: 'user',
+          content: prompt
+        }],
+        max_tokens: 2000, // Increased for more detailed analysis
+        temperature: 0 // Use temperature 0 for precise, deterministic automation reasoning
+      };
+    }
+  }
+
+  parseResponse(data, providerConfig) {
+    console.log('🔍 Parsing response for provider:', providerConfig.responseFormat);
+    console.log('🔍 Response data structure:', JSON.stringify(data, null, 2));
+    
+    if (providerConfig.responseFormat === 'gemini') {
+      console.log('🔍 Checking Gemini response structure...');
+      console.log('🔍 Has candidates:', !!data.candidates);
+      console.log('🔍 Candidates length:', data.candidates?.length);
+      if (data.candidates && data.candidates[0]) {
+        console.log('🔍 First candidate:', JSON.stringify(data.candidates[0], null, 2));
+        console.log('🔍 Has content:', !!data.candidates[0].content);
+        console.log('🔍 Has parts:', !!data.candidates[0].content?.parts);
+        console.log('🔍 Parts length:', data.candidates[0].content?.parts?.length);
+        if (data.candidates[0].content?.parts?.[0]) {
+          console.log('🔍 First part:', JSON.stringify(data.candidates[0].content.parts[0], null, 2));
+        }
+      }
+      
+      if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+        const candidate = data.candidates[0];
+        
+        // Check finish reason first
+        if (candidate.finishReason === 'MAX_TOKENS') {
+          console.log('⚠️ Gemini response was truncated due to MAX_TOKENS limit');
+        }
+        
+        // Try to extract content from different possible structures
+        let responseContent = null;
+        
+        if (candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text) {
+          // Standard Gemini format with parts array
+          responseContent = candidate.content.parts[0].text;
+          console.log('✅ Extracted content from parts[0].text, length:', responseContent.length);
+        } else if (candidate.content.text) {
+          // Alternative format with direct text property
+          responseContent = candidate.content.text;
+          console.log('✅ Extracted content from direct text property, length:', responseContent.length);
+        } else if (typeof candidate.content === 'string') {
+          // Direct string content
+          responseContent = candidate.content;
+          console.log('✅ Extracted content as direct string, length:', responseContent.length);
+        } else {
+          console.log('❌ No extractable text content found in candidate.content');
+          console.log('❌ Content structure:', JSON.stringify(candidate.content, null, 2));
+        }
+        
+        if (responseContent) {
+          return {
+            content: responseContent
+          };
+        }
+      } else {
+        console.log('❌ Gemini response structure validation failed - no valid candidate with content');
+      }
+    } else if (providerConfig.responseFormat === 'anthropic') {
+      if (data.content && data.content[0] && data.content[0].text) {
+        return {
+          content: data.content[0].text
+        };
+      }
+    } else {
+      // Default OpenAI-compatible format
+      if (data.choices && data.choices[0] && data.choices[0].message) {
+        return {
+          content: data.choices[0].message.content
+        };
+      }
+    }
+    
+    console.log('❌ Failed to parse response for provider config:', JSON.stringify(providerConfig));
+    console.log('❌ Response data was:', JSON.stringify(data, null, 2));
+    throw new Error(`Invalid response format for provider config: ${JSON.stringify(providerConfig)}`);
+  }
+
+  async executeLLMAction(action, tabId) {
+    try {
+      console.log('🎯 Executing LLM action:', action);
+      
+      if (action.type === 'click') {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          func: (actionData) => {
+            console.log('🔍 Looking for element identified by LLM:', actionData);
+            
+            let target = null;
+            
+            // Try XPath first if provided
+            if (actionData.xpath) {
+              try {
+                const xpathResult = document.evaluate(actionData.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                if (xpathResult && xpathResult.singleNodeValue) {
+                  target = xpathResult.singleNodeValue;
+                }
+              } catch (e) {
+                console.warn('XPath lookup failed:', e);
+              }
+            }
+            
+            // Fallback: search by text content
+            if (!target && actionData.element_text) {
+              const buttons = document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]');
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').trim();
+                if (text === actionData.element_text || text.toLowerCase().includes(actionData.element_text.toLowerCase())) {
+                  if (btn.offsetParent !== null) { // Visible
+                    target = btn;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (!target) {
+              return {
+                success: false,
+                details: 'Element not found on page',
+                actuallyClicked: false
+              };
+            }
+            
+            console.log('✅ Found LLM target element:', {
+              tagName: target.tagName,
+              text: target.textContent?.trim(),
+              className: target.className
+            });
+            
+            // Execute browser-only click
+            try {
+              target.scrollIntoView({ behavior: 'auto', block: 'center' });
+              target.focus();
+              target.click();
+              
+              return {
+                success: true,
+                details: `Clicked element: ${target.textContent?.trim()}`,
+                actuallyClicked: true,
+                clickedText: target.textContent?.trim()
+              };
+            } catch (e) {
+              return {
+                success: false,
+                details: `Click failed: ${e.message}`,
+                actuallyClicked: false
+              };
+            }
+          },
+          args: [action]
+        });
+        
+        return result?.[0]?.result || { success: false, details: 'Script execution failed' };
+      }
+      
+      if (action.type === 'wait') {
+        console.log('⏳ Executing wait action:', action);
+        
+        // Handle different wait types
+        if (action.selector === "document.readyState === 'complete'" || action.element_text?.toLowerCase().includes('page load')) {
+          // Wait for page to be fully loaded
+          await this.waitForPageToLoad(tabId);
+          return {
+            success: true,
+            details: 'Page load wait completed'
+          };
+        }
+        
+        // Default wait duration if no specific type
+        const waitTime = action.duration || 2000; // Default 2 seconds
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        
+        return {
+          success: true,
+          details: `Wait completed: ${waitTime}ms`
+        };
+      }
+      
+      return { success: false, details: 'Unsupported action type' };
+      
+    } catch (error) {
+      console.error('❌ Action execution failed:', error);
+      return {
+        success: false,
+        details: `Execution error: ${error.message}`,
+        actuallyClicked: false
+      };
     }
   }
 
@@ -2964,6 +4507,45 @@ class BrowserAutomation {
     }
   }
 
+  async waitForPageToLoad(tabId, timeout = 10000) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      try {
+        const result = await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          func: () => {
+            return {
+              readyState: document.readyState,
+              loaded: document.readyState === 'complete'
+            };
+          }
+        });
+        
+        if (result?.[0]?.result?.loaded) {
+          console.log('✅ Page fully loaded and interactive:', (await chrome.tabs.get(tabId)).url);
+          
+          // Add 5-second delay after page loads completely before performing actions
+          console.log('⏳ Waiting additional 5 seconds for page stability...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          console.log('✅ 5-second post-load delay completed');
+          
+          return true;
+        }
+        
+        // Wait a bit before checking again
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (error) {
+        console.warn('⚠️ Error checking page load state:', error);
+        break;
+      }
+    }
+    
+    console.warn('⚠️ Page load timeout reached');
+    return false;
+  }
+
   async waitForPageLoad(tabId, timeout = 30000) {
     const startTime = Date.now();
     
@@ -2980,6 +4562,12 @@ class BrowserAutomation {
               func: () => document.readyState === 'complete'
             });
             console.log(`✅ Page fully loaded and interactive: ${tab.url}`);
+            
+            // Add 5-second delay after page loads completely before performing actions
+            console.log('⏳ Waiting additional 5 seconds for page stability...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            console.log('✅ 5-second post-load delay completed');
+            
             return true;
           } catch (scriptError) {
             console.log('📄 Page loaded but not yet interactive, waiting...');

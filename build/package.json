@@ -1,6 +1,6 @@
 {
   "name": "chromeai-playwright-automation",
-  "version": "1.0.0",
+  "version": "2.3.0",
   "description": "Playwright automation server for ChromeAI Agent",
   "main": "automation-server.js",
   "scripts": {
