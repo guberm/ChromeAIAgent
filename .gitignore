@@ -1,0 +1,42 @@
+# Build artifacts
+build.zip
+*.zip
+
+# Development files
+launch-chrome.bat
+temp-*
+node_modules/
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+original_*
+*.bak
+*.orig
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Package manager lockfiles (optional - some teams prefer to track these)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
