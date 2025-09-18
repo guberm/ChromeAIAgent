@@ -5,7 +5,8 @@
   "main": "automation-server.js",
   "scripts": {
     "start": "node automation-server.js",
-    "dev": "nodemon automation-server.js"
+    "dev": "nodemon automation-server.js",
+    "test": "node tests/run-tests.js"
   },
   "dependencies": {
     "playwright": "^1.40.0",

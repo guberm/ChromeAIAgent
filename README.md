@@ -41,7 +41,7 @@ ChromeAI Agent is a powerful Chrome extension that brings multiple AI assistants
 
 - **User-Facing Step-by-Step Progress Comments**: Every automation step now appears in the chat UI, providing real-time, transparent progress tracking for all browser automation tasks.
 - **Robust Progress Tracking**: Enhanced progress message delivery and UI integration, ensuring users always see what the agent is doing.
-- **Improved Udemy and Multi-URL Automation**: More reliable enrollment and fallback logic for course automation, with clearer error handling and feedback.
+- **Improved Multi-URL Automation**: More reliable enrollment and fallback logic for course automation, with clearer error handling and feedback.
 - **Manifest and packaging updates**: Version 2.3.3 is ready for Chrome Web Store and GitHub release, with all build artifacts and manifests synchronized.
 
 ---

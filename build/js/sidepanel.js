@@ -247,6 +247,20 @@ class ChromeAiAgent {
       if (message.action === 'showSettings') {
         this.showSettings();
       }
+      // Display agent micro-updates and plans in chat view
+      if (message && message.type === 'AGENT_LOG') {
+        try { this.appendSystemNote(`[${message.level}] ${message.message}`); } catch {}
+      }
+      if (message && message.type === 'AGENT_PLAN_UPDATED') {
+        try {
+          const steps = (message.plan && message.plan.steps) ? message.plan.steps.map(s => s.action).join(', ') : '';
+          this.appendSystemNote(`Plan updated (${message.plan?.intent || 'n/a'}): ${steps}`);
+        } catch {}
+      }
+      // Handle progress messages from background.js and show in chat
+      if (message && message.action === 'progressMessage' && message.content) {
+        this.addMessage('assistant', message.content);
+      }
     });
 
     // Check for pending actions
@@ -256,6 +270,18 @@ class ChromeAiAgent {
         chrome.storage.local.remove(['pendingAction']);
       }
     });
+  }
+
+  appendSystemNote(text) {
+    try {
+      const container = document.getElementById('messagesContainer');
+      if (!container) return;
+      const el = document.createElement('div');
+      el.className = 'system-note';
+      el.textContent = text;
+      container.appendChild(el);
+      container.scrollTop = container.scrollHeight;
+    } catch {}
   }
 
   async loadPageContext() {
@@ -341,8 +367,19 @@ Available actions are limited to basic navigation commands.`;
   }
 
   updatePageContext() {
-    const pageContextEl = document.documentElement.outerHTML;
+    const pageContextEl = document.getElementById('pageContext');
     const pageTitleEl = document.getElementById('pageTitle');
+    
+    if (!pageContextEl || !pageTitleEl) {
+      console.warn('⚠️ Page context elements not found');
+      return;
+    }
+    
+    // Store full page HTML for automation purposes
+    if (typeof window !== 'undefined' && document.documentElement) {
+      this.fullPageHTML = document.documentElement.outerHTML;
+      this.pageBodyHTML = document.body ? document.body.innerHTML : '';
+    }
     
     if (this.pageInfo && this.pageInfo.title) {
       let displayTitle = this.pageInfo.title;
@@ -366,7 +403,8 @@ Available actions are limited to basic navigation commands.`;
         url: this.pageInfo.url,
         isRestricted: this.pageInfo.isRestricted,
         hasContent: !!this.pageInfo.content,
-        contentLength: this.pageInfo.content?.length || 0
+        contentLength: this.pageInfo.content?.length || 0,
+        htmlLength: this.fullPageHTML?.length || 0
       });
     } else {
       pageContextEl.style.display = 'none';

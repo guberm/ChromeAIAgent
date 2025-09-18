@@ -1,4 +1,31 @@
-﻿// Listen for LLM element match requests from content/page context
+﻿// Utility: Send a message to the side panel (for user-facing progress updates)
+function sendProgressMessageToPanel(message) {
+  try {
+    chrome.runtime.sendMessage({
+      action: "progressMessage",
+      content: message
+    });
+  } catch (e) {
+    // Fallback: log to console if messaging fails
+    console.log("[Progress]", message);
+  }
+}
+// Core module imports for MV3 (classic script)
+try {
+  importScripts(
+    'src/bg/logger.js',
+    'src/bg/token.js',
+    'src/bg/intent.js',
+    'src/bg/plan.js',
+    'src/bg/automation/page-analysis.js',
+    'src/bg/automation/xpath-automation.js'
+  );
+  console.log('[Init] Core background modules loaded');
+} catch (e) {
+  console.warn('[Init] importScripts failed:', e && e.message);
+}
+
+// Listen for LLM element match requests from content/page context
 chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   if (message && message.type === 'CHROMEAIAgent_LLM_ELEMENT_MATCH') {
     try {
@@ -43,568 +70,226 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     return true;
   }
 });
+
+// Intent-driven orchestration: handle user high-level command without auto-advancing
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  if (!message || message.type !== 'AGENT_USER_COMMAND') return; // allow other listeners
+  const { text, tabId, url } = message;
+  handleAgentUserCommand(text, tabId, url)
+    .then(resp => sendResponse(resp))
+    .catch(e => {
+      agentLog('error', 'AGENT_USER_COMMAND failed', { error: e.message });
+      sendResponse({ success: false, error: e && e.message });
+    });
+  return true;
+});
+
+async function executeStepInTab(tabId, step) {
+  try {
+    if (!step) return { success: false, error: 'No step provided' };
+    const { action, args = {} } = step;
+
+    // Determine if the target tab is a restricted page (cannot inject)
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab?.url || '';
+    const isRestricted = url.startsWith('chrome://') || url.startsWith('chrome-extension://');
+
+    if (isRestricted) {
+      // Restricted-mode: only allow safe actions like navigate/newTab to http(s)
+      const targetUrl = args?.url || args?.href;
+      if ((action === 'navigate' || action === 'open' || action === 'newTab') && typeof targetUrl === 'string' && /^https?:\/\//i.test(targetUrl)) {
+        if (action === 'newTab' || action === 'open') {
+          const created = await chrome.tabs.create({ url: targetUrl });
+          return { success: true, action: 'newTab', tabId: created.id, url: targetUrl, message: 'Opened new tab (restricted mode)' };
+        } else {
+          await chrome.tabs.update(tabId, { url: targetUrl });
+          return { success: true, action: 'navigate', url: targetUrl, message: 'Navigated (restricted mode)' };
+        }
+      }
+      return { success: false, error: 'Restricted page: automation is limited. Only navigate/newTab to http(s) is allowed.', pageUrl: url, attemptedAction: action };
+    }
+
+    // Inject the existing automation content script function directly on allowed pages
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: automationContentScript,
+      args: [action, args]
+    });
+    return injection?.result;
+  } catch (e) {
+    return { success: false, error: e && e.message };
+  }
+}
+
+// Shared handler to orchestrate deterministic, first-step-only automation
+async function handleAgentUserCommand(text, tabId, url) {
+  // Ensure we have an accurate URL; if missing, fetch from tabs API
+  if (!url && typeof tabId === 'number') {
+    try { const t = await chrome.tabs.get(tabId); url = t?.url || url; } catch {}
+  }
+  const host = (() => { try { return new URL(url || '').host; } catch { return ''; } })();
+  
+  // Check for multi-URL commands first
+  const urlPattern = /https?:\/\/[^\s]+/g;
+  const urls = text.match(urlPattern);
+  
+  if (urls && urls.length > 1) {
+    const multiUrlKeywords = ['tabs', 'links', 'all', 'each', 'enroll', 'sequential', 'one by one'];
+    const hasMultiUrlIntent = multiUrlKeywords.some(keyword => 
+      text.toLowerCase().includes(keyword)
+    );
+    
+    if (hasMultiUrlIntent) {
+      console.log('🔗 Multi-URL command detected in main handler:', urls.length, 'URLs');
+      // Use the browser automation system for multi-URL handling
+      if (typeof browserAutomation !== 'undefined' && browserAutomation.executeSequentialUrlAutomation) {
+        const result = await browserAutomation.executeSequentialUrlAutomation(text, urls, tabId);
+        return { 
+          success: true, 
+          intent: 'automation', 
+          result, 
+          message: `Processed ${urls.length} URLs sequentially` 
+        };
+      }
+    }
+  }
+  
+  const classification = await Intent.classifyIntent(text, host);
+  agentLog('info', 'Classified user intent', { text, url, classification });
+
+  if (classification.intent === 'chat') {
+    const plan = { steps: [], createdAt: new Date().toISOString(), intent: 'chat' };
+    await AgentPlanStore.setPlan(tabId, plan);
+    return { success: true, intent: 'chat', message: 'Proceed with conversational response', plan };
+  }
+
+  // Restricted-mode check: if current page is chrome:// or chrome-extension://, do not attempt DOM steps
+  const restricted = (url || '').startsWith('chrome://') || (url || '').startsWith('chrome-extension://');
+  if (restricted) {
+    const steps = await Intent.planSteps(text, host);
+    const plan = { steps, createdAt: new Date().toISOString(), intent: 'automation', restricted: true };
+    await AgentPlanStore.setPlan(tabId, plan);
+
+    const first = steps[0];
+    // Suggest navigation-first if possible
+    const suggestion = 'STOP';
+    const validation = { ok: false, note: 'Restricted page: cannot perform DOM automation here.' };
+    agentLog('info', 'Restricted mode: planned steps but not executed', { first, url, validation });
+    return { success: false, intent: 'automation', restricted: true, reason: 'Restricted page', executed: null, validation, nextSteps: steps, llmSuggestion: suggestion };
+  }
+
+  // Ask LLM if page content is needed for automation
+  let pageContentNeeded = false;
+  let pageContentReason = '';
+  try {
+    const contentPrompt = `You are an expert web automation agent. The user command is: "${text}". The website domain is: ${host}. Do you need the actual page content (HTML/text) to automate this command, or is the command/domain enough? Answer strictly YES or NO, then a one-sentence reason.`;
+    const llmContentResp = await Intent.fetchWithProviderLLM(contentPrompt);
+    const match = llmContentResp.match(/^(YES|NO)\b/i);
+    pageContentNeeded = match && match[1].toUpperCase() === 'YES';
+    pageContentReason = llmContentResp.replace(/^(YES|NO)\b[\s\-:]*/i, '').trim();
+    agentLog('info', 'LLM page content need check', { pageContentNeeded, pageContentReason, llmContentResp });
+    // Optionally broadcast to UI
+    chrome.runtime.sendMessage({ type: 'AGENT_LOG', level: 'info', message: `LLM: Page content needed? ${pageContentNeeded ? 'YES' : 'NO'} - ${pageContentReason}` });
+  } catch (e) {
+    agentLog('warn', 'LLM page content need check failed, defaulting to NO', { error: e && e.message });
+  }
+
+  let steps;
+  if (pageContentNeeded) {
+    // Fetch page content from tab (content script)
+    let pageContent = '';
+    try {
+      pageContent = await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tabId, { type: 'GET_PAGE_CONTENT' }, resp => {
+          if (resp && resp.content) resolve(resp.content);
+          else reject(new Error('No page content returned'));
+        });
+      });
+      agentLog('info', 'Fetched page content for LLM planning', { length: pageContent.length });
+    } catch (e) {
+      agentLog('warn', 'Failed to fetch page content, proceeding without', { error: e && e.message });
+    }
+    // Plan steps with page content context
+    const planPrompt = `You are an expert web automation planner. Given the user's command, website domain, and the following page content, break down the user's request into a minimal sequence of automation steps.\n\nUser command: "${text}"\nWebsite domain: ${host}\nPage content:\n${pageContent.substring(0, 8000)}\n\nRespond with a JSON array of steps. Each step should be an object: {\n  \"action\": \"click|type|navigate|scroll|wait|...\",\n  \"args\": { ... },\n  \"rationale\": \"...\"\n}\n}`;
+    try {
+      const planContent = await Intent.fetchWithProviderLLM(planPrompt);
+      steps = JSON.parse(planContent);
+      if (!Array.isArray(steps) || steps.length === 0) steps = [{ action: 'llm_plan_needed', args: {}, rationale: 'LLM returned no steps' }];
+    } catch (e) {
+      agentLog('warn', 'LLM planSteps with page content failed, falling back', { error: e && e.message });
+      steps = await Intent.planSteps(text, host);
+    }
+  } else {
+    steps = await Intent.planSteps(text, host);
+  }
+
+  const plan = { steps, createdAt: new Date().toISOString(), intent: 'automation', pageContentNeeded, pageContentReason };
+  await AgentPlanStore.setPlan(tabId, plan);
+
+  const first = steps[0];
+  if (!first) {
+    return { success: false, error: 'No actionable step derived' };
+  }
+
+  // If planner indicates LLM plan is needed, do not attempt DOM execution
+  if (first.action === 'llm_plan_needed') {
+    const validation = { ok: false, note: 'LLM plan needed; no DOM action executed.' };
+    agentLog('info', 'Planner indicated LLM plan is needed', { text, host });
+    return { success: true, executed: null, result: null, validation, nextSteps: steps.slice(1), llmSuggestion: 'STOP' };
+  }
+
+  // Execute only the first step deterministically
+  const execResult = await executeStepInTab(tabId, first);
+  agentLog('info', 'Executed first step', { first, execResult });
+
+  // Validate the result briefly
+  let validation = { ok: !!execResult?.success, note: execResult?.message || execResult?.action || 'executed' };
+
+  // If the first step navigates or opens a new tab, wait briefly for readiness
+  try {
+    if (first.action === 'navigate' || first.action === 'newTab' || first.action === 'open') {
+      const targetUrl = execResult?.url || first?.args?.url || url;
+      // Determine which tab to observe: new tab id if provided, else current
+      const targetTabId = (typeof execResult?.tabId === 'number') ? execResult.tabId : tabId;
+      if (typeof browserAutomation?.waitForPageReady === 'function') {
+        const ready = await browserAutomation.waitForPageReady(targetTabId, 10000);
+        validation = { ok: validation.ok && ready, note: `${validation.note}; page ready: ${ready}` };
+        agentLog('info', 'Post-navigation readiness checked', { targetUrl, targetTabId, ready });
+      }
+    }
+  } catch (e) {
+    agentLog('warn', 'Readiness check after navigation failed', { error: e?.message });
+  }
+
+  // Ask LLM whether to CONTINUE or STOP next
+  let llmSuggestion = '';
+  try {
+    llmSuggestion = await Intent.fetchWithProviderLLM(
+      `You are coordinating a web automation agent. User command: "${text}". We performed the first step: ${first.action}.
+Current URL host: ${host}. Should the agent take another step now? Answer strictly as one of: CONTINUE or STOP. Then provide a single sentence reason.`,
+      null
+    );
+  } catch (e) {
+    agentLog('warn', 'LLM suggestion failed', { error: e.message });
+  }
+
+  // Record planned next steps without executing
+  const plannedNext = (steps || []).slice(1);
+  agentLog('info', 'Planned next steps (not executed)', { plannedNext, llmSuggestion, validation });
+
+  return { success: true, executed: first, result: execResult, validation, nextSteps: plannedNext, llmSuggestion };
+}
 // Background service worker for ChromeAiAgent
 // Import MCP-compliant provider interface
 // Temporarily commented out to fix service worker registration
 // importScripts('mcp-provider-interface.js');
 
-// XPath Page Analysis System
-function pageAnalysisScript() {
-  console.log('[XPathAnalysis] Starting comprehensive page analysis...');
-  
-  // Generate XPath for element
-  function generateXPath(element) {
-    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
-    
-    // Handle special cases
-    if (element.id) {
-      return `//*[@id="${element.id}"]`;
-    }
-    
-    const parts = [];
-    let current = element;
-    
-    while (current && current.nodeType === Node.ELEMENT_NODE) {
-      let tagName = current.tagName.toLowerCase();
-      let selector = tagName;
-      
-      // Add position if there are siblings with same tag
-      if (current.parentNode) {
-        const siblings = Array.from(current.parentNode.children)
-          .filter(sibling => sibling.tagName.toLowerCase() === tagName);
-        
-        if (siblings.length > 1) {
-          const index = siblings.indexOf(current) + 1;
-          selector += `[${index}]`;
-        }
-      }
-      
-      parts.unshift(selector);
-      current = current.parentNode;
-    }
-    
-    return '/' + parts.join('/');
-  }
-  
-  // Analyze element properties for automation scoring
-  function analyzeElement(element) {
-    const analysis = {
-      xpath: generateXPath(element),
-      tagName: element.tagName.toLowerCase(),
-      id: element.id || null,
-      classes: Array.from(element.classList),
-      text: element.textContent?.trim().substring(0, 100) || '',
-      attributes: {},
-      isVisible: isElementVisible(element),
-      isClickable: isElementClickable(element),
-      isInput: isElementInput(element),
-      boundingRect: element.getBoundingClientRect(),
-      automationScore: 0
-    };
-    
-    // Collect relevant attributes
-    ['type', 'name', 'placeholder', 'value', 'href', 'role', 'aria-label', 'title'].forEach(attr => {
-      if (element.hasAttribute(attr)) {
-        analysis.attributes[attr] = element.getAttribute(attr);
-      }
-    });
-    
-    // Calculate automation relevance score
-    analysis.automationScore = calculateAutomationScore(element, analysis);
-    
-    return analysis;
-  }
-  
-  // Check if element is visible
-  function isElementVisible(element) {
-    const rect = element.getBoundingClientRect();
-    const style = window.getComputedStyle(element);
-    
-    return rect.width > 0 && 
-           rect.height > 0 && 
-           style.display !== 'none' && 
-           style.visibility !== 'hidden' && 
-           style.opacity !== '0';
-  }
-  
-  // Check if element is clickable
-  function isElementClickable(element) {
-    const clickableTags = ['a', 'button', 'input', 'select', 'textarea'];
-    const clickableTypes = ['button', 'submit', 'reset', 'checkbox', 'radio'];
-    
-    if (clickableTags.includes(element.tagName.toLowerCase())) return true;
-    if (element.getAttribute('role') === 'button') return true;
-    if (element.getAttribute('onclick')) return true;
-    if (element.style.cursor === 'pointer') return true;
-    
-    return false;
-  }
-  
-  // Check if element is input
-  function isElementInput(element) {
-    const inputTags = ['input', 'textarea', 'select'];
-    const editableTypes = ['text', 'email', 'password', 'search', 'url', 'tel', 'number'];
-    
-    if (inputTags.includes(element.tagName.toLowerCase())) return true;
-    if (element.isContentEditable) return true;
-    
-    return false;
-  }
-  
-  // Calculate automation relevance score
-  function calculateAutomationScore(element, analysis) {
-    let score = 0;
-    
-    // Visibility bonus
-    if (analysis.isVisible) score += 10;
-    
-    // Interactivity bonuses
-    if (analysis.isClickable) score += 15;
-    if (analysis.isInput) score += 15;
-    
-    // Text content bonus
-    if (analysis.text.length > 0) score += 5;
-    if (analysis.text.length > 10) score += 5;
-    
-    // ID bonus
-    if (analysis.id) score += 10;
-    
-    // Semantic attributes bonus
-    if (analysis.attributes['aria-label']) score += 8;
-    if (analysis.attributes.role) score += 5;
-    if (analysis.attributes.title) score += 3;
-    
-    // Form-related bonuses
-    if (analysis.attributes.name) score += 7;
-    if (analysis.attributes.placeholder) score += 5;
-    
-    // Size bonus for reasonable sized elements
-    const rect = analysis.boundingRect;
-    if (rect.width >= 10 && rect.height >= 10) score += 5;
-    if (rect.width >= 50 && rect.height >= 20) score += 5;
-    
-    return score;
-  }
-  
-  // Main analysis function
-  function analyzePageElements() {
-    const allElements = document.querySelectorAll('*');
-    const analysis = {
-      pageUrl: window.location.href,
-      pageTitle: document.title,
-      timestamp: new Date().toISOString(),
-      totalElements: allElements.length,
-      interactiveElements: [],
-      elementsByXPath: new Map(),
-      topScoredElements: [],
-      categories: {
-        buttons: [],
-        inputs: [],
-        links: [],
-        forms: [],
-        navigation: [],
-        content: []
-      }
-    };
-    
-    console.log(`[XPathAnalysis] Analyzing ${allElements.length} elements...`);
-    
-    // Analyze each element
-    allElements.forEach(element => {
-      const elementAnalysis = analyzeElement(element);
-      
-      // Skip elements with very low scores or invisible elements
-      if (elementAnalysis.automationScore < 5 || !elementAnalysis.isVisible) return;
-      
-      // Store by XPath for quick lookup
-      analysis.elementsByXPath.set(elementAnalysis.xpath, elementAnalysis);
-      analysis.interactiveElements.push(elementAnalysis);
-      
-      // Categorize elements
-      if (elementAnalysis.tagName === 'button' || elementAnalysis.attributes.role === 'button') {
-        analysis.categories.buttons.push(elementAnalysis);
-      } else if (elementAnalysis.isInput) {
-        analysis.categories.inputs.push(elementAnalysis);
-      } else if (elementAnalysis.tagName === 'a') {
-        analysis.categories.links.push(elementAnalysis);
-      } else if (elementAnalysis.tagName === 'form') {
-        analysis.categories.forms.push(elementAnalysis);
-      } else if (elementAnalysis.tagName === 'nav' || 
-                 elementAnalysis.classes.some(cls => cls.includes('nav'))) {
-        analysis.categories.navigation.push(elementAnalysis);
-      } else {
-        analysis.categories.content.push(elementAnalysis);
-      }
-    });
-    
-    // Sort by automation score (highest first)
-    analysis.interactiveElements.sort((a, b) => b.automationScore - a.automationScore);
-    analysis.topScoredElements = analysis.interactiveElements.slice(0, 50);
-    
-    // Sort categories by score
-    Object.keys(analysis.categories).forEach(category => {
-      analysis.categories[category].sort((a, b) => b.automationScore - a.automationScore);
-    });
-    
-    console.log(`[XPathAnalysis] Analysis complete:`, {
-      interactiveElements: analysis.interactiveElements.length,
-      buttons: analysis.categories.buttons.length,
-      inputs: analysis.categories.inputs.length,
-      links: analysis.categories.links.length,
-      topScore: analysis.topScoredElements[0]?.automationScore || 0
-    });
-    
-    return analysis;
-  }
-  
-  // Execute analysis and return results
-  try {
-    const pageAnalysis = analyzePageElements();
-    
-    // Store analysis in global variable for quick access
-    window.chromeAiAgentPageAnalysis = pageAnalysis;
-    
-    return {
-      success: true,
-      analysis: pageAnalysis,
-      message: `Page analysis complete: ${pageAnalysis.interactiveElements.length} interactive elements found`
-    };
-  } catch (error) {
-    console.error('[XPathAnalysis] Analysis failed:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: 'Page analysis failed'
-    };
-  }
-}
+// XPath analysis moved to src/bg/automation/page-analysis.js (global pageAnalysisScript)
 
-// Persist helper: store last selected tab(s) and keep a short history
-async function persistLastSelected(entry) {
-  try {
-    if (!chrome || !chrome.storage || !chrome.storage.local || !chrome.storage.local.get) return;
-    console.log('[Automation] persistLastSelected: storing entry', entry);
-    const data = await new Promise((resolve) => chrome.storage.local.get({ lastSelectedTabs: [], lastSelectedHistorySize: 20 }, resolve));
-    const arr = Array.isArray(data.lastSelectedTabs) ? data.lastSelectedTabs : [];
-    const maxSize = Number(data.lastSelectedHistorySize) || 20;
-    arr.push(entry);
-    while (arr.length > maxSize) arr.shift();
-    const payload = { lastSelectedTabs: arr, lastSelectedTab: entry };
-    chrome.storage.local.set(payload, () => { try { console.log('[Automation] persistLastSelected: saved payload length=', arr.length); } catch(e) {} });
-  } catch (e) {
-    console.warn('persistLastSelected failed:', e && e.message);
-  }
-}
+// Persist helper moved to src/bg/automation/xpath-automation.js (global persistLastSelected)
 
-// Enhanced XPath-based element execution
-function xpathAutomationScript(action, params) {
-  console.log('[XPathAutomation] Executing action:', action, 'with params:', params);
-  
-  // Get stored page analysis
-  const pageAnalysis = window.chromeAiAgentPageAnalysis;
-  if (!pageAnalysis) {
-    console.warn('[XPathAutomation] No page analysis found, running quick analysis...');
-    // If no analysis exists, run a quick one
-    const analysisResult = pageAnalysisScript();
-    if (!analysisResult.success) {
-      return { success: false, error: 'Failed to analyze page for XPath automation' };
-    }
-  }
-  
-  // XPath-based element finder
-  function findElementByXPath(xpath) {
-    try {
-      const result = document.evaluate(
-        xpath,
-        document,
-        null,
-        XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
-      );
-      return result.singleNodeValue;
-    } catch (error) {
-      console.error('[XPathAutomation] XPath evaluation failed:', xpath, error);
-      return null;
-    }
-  }
-  
-  // Enhanced element finder using XPath and analysis
-  function findElementForAutomation(selector, actionType) {
-    const analysis = window.chromeAiAgentPageAnalysis;
-    
-    console.log('[XPathAutomation] Looking for element:', selector, 'action:', actionType);
-    
-    // If selector is already an XPath, use it directly
-    if (selector.startsWith('/') || selector.startsWith('//')) {
-      const element = findElementByXPath(selector);
-      if (element) {
-        console.log('[XPathAutomation] Found element by direct XPath');
-        return element;
-      }
-    }
-    
-    // Search in analyzed elements
-    let candidates = [];
-    
-    if (actionType === 'click') {
-      candidates = [...analysis.categories.buttons, ...analysis.categories.links];
-    } else if (actionType === 'type' || actionType === 'input') {
-      candidates = analysis.categories.inputs;
-    } else {
-      candidates = analysis.interactiveElements;
-    }
-    
-    console.log('[XPathAutomation] Searching among', candidates.length, 'candidates');
-    
-    // Find best match by text content, attributes, or properties
-    const selectorLower = selector.toLowerCase().replace(/['"]/g, ''); // Remove quotes
-    
-    // Exact text match first
-    let bestMatch = candidates.find(elem => {
-      const text = elem.text?.toLowerCase() || '';
-      return text === selectorLower;
-    });
-    
-    // If no exact match, try partial text match
-    if (!bestMatch) {
-      bestMatch = candidates.find(elem => {
-        const text = elem.text?.toLowerCase() || '';
-        return text.includes(selectorLower) || selectorLower.includes(text);
-      });
-    }
-    
-    // If still no match, try attribute and property matching
-    if (!bestMatch) {
-      bestMatch = candidates.find(elem => {
-        return (
-          elem.id?.toLowerCase().includes(selectorLower) ||
-          elem.attributes.name?.toLowerCase().includes(selectorLower) ||
-          elem.attributes.placeholder?.toLowerCase().includes(selectorLower) ||
-          elem.attributes['aria-label']?.toLowerCase().includes(selectorLower) ||
-          elem.attributes.title?.toLowerCase().includes(selectorLower) ||
-          elem.attributes.alt?.toLowerCase().includes(selectorLower) ||
-          elem.classes.some(cls => cls.toLowerCase().includes(selectorLower))
-        );
-      });
-    }
-    
-    if (bestMatch) {
-      console.log('[XPathAutomation] Found element via analysis:', {
-        text: bestMatch.text,
-        xpath: bestMatch.xpath,
-        tagName: bestMatch.tagName,
-        score: bestMatch.automationScore
-      });
-      return findElementByXPath(bestMatch.xpath);
-    }
-    
-    console.log('[XPathAutomation] No match found in analysis, trying direct DOM search...');
-    
-    // Fallback 1: Direct text search in DOM
-    const allElements = document.querySelectorAll('button, a, input, [role="button"], [onclick]');
-    for (const element of allElements) {
-      const text = element.textContent?.toLowerCase() || '';
-      if (text.includes(selectorLower) || selectorLower.includes(text)) {
-        console.log('[XPathAutomation] Found via direct DOM text search:', element);
-        return element;
-      }
-    }
-    
-    // Fallback 2: CSS selector
-    try {
-      const cssResult = document.querySelector(selector);
-      if (cssResult) {
-        console.log('[XPathAutomation] Found via CSS selector:', cssResult);
-        return cssResult;
-      }
-    } catch (cssError) {
-      console.log('[XPathAutomation] CSS selector failed:', cssError.message);
-    }
-    
-    console.log('[XPathAutomation] Element not found for selector:', selector);
-    return null;
-  }
-  
-  // Automation actions using XPath
-  const xpathAutomation = {
-    click: (selector) => {
-      const element = findElementForAutomation(selector, 'click');
-      if (!element) return { success: false, error: 'Element not found for click', selector };
-      
-      console.log('[XPathAutomation] Found element for click:', element, 'XPath:', generateXPathForElement(element));
-      
-      // Enhanced click with multiple strategies for modern web apps
-      try {
-        // Strategy 1: Scroll element into view
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        
-        // Strategy 2: Simulate user interaction events
-        const rect = element.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
-        
-        // Dispatch mouse events in correct sequence
-        const mouseEvents = ['mousedown', 'mouseup', 'click'];
-        mouseEvents.forEach(eventType => {
-          const event = new MouseEvent(eventType, {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY,
-            button: 0,
-            buttons: 1
-          });
-          element.dispatchEvent(event);
-        });
-        
-        // Strategy 3: Also try focus + Enter for keyboard accessibility
-        if (element.tagName === 'BUTTON' || element.role === 'button') {
-          element.focus();
-          setTimeout(() => {
-            const enterEvent = new KeyboardEvent('keydown', {
-              bubbles: true,
-              cancelable: true,
-              key: 'Enter',
-              keyCode: 13,
-              which: 13
-            });
-            element.dispatchEvent(enterEvent);
-          }, 50);
-        }
-        
-        // Strategy 4: Direct click as fallback
-        element.click();
-        
-        // Validation: Check if click had any effect (page change, new elements, etc.)
-        const initialUrl = window.location.href;
-        const initialActiveElement = document.activeElement;
-        
-        // Wait a bit to see if anything changed
-        setTimeout(() => {
-          const urlChanged = window.location.href !== initialUrl;
-          const focusChanged = document.activeElement !== initialActiveElement;
-          const hasVisibleChange = element.style.display === 'none' || element.classList.contains('active');
-          
-          console.log('[XPathAutomation] Click validation:', {
-            urlChanged,
-            focusChanged,
-            hasVisibleChange,
-            currentUrl: window.location.href,
-            originalUrl: initialUrl
-          });
-        }, 200);
-        
-        return { 
-          success: true, 
-          action: 'click', 
-          xpath: generateXPathForElement(element), 
-          selector,
-          element: {
-            tagName: element.tagName,
-            text: element.textContent?.slice(0, 50),
-            id: element.id,
-            classes: Array.from(element.classList)
-          }
-        };
-        
-      } catch (clickError) {
-        console.error('[XPathAutomation] Enhanced click failed:', clickError);
-        
-        // Final fallback: basic click
-        try {
-          element.click();
-          return { 
-            success: true, 
-            action: 'click', 
-            xpath: generateXPathForElement(element), 
-            selector,
-            warning: 'Enhanced click failed, used basic click',
-            error: clickError.message
-          };
-        } catch (basicClickError) {
-          return { 
-            success: false, 
-            error: 'All click strategies failed', 
-            selector,
-            xpath: generateXPathForElement(element),
-            enhancedError: clickError.message,
-            basicError: basicClickError.message
-          };
-        }
-      }
-    },
-    
-    type: (selector, text) => {
-      const element = findElementForAutomation(selector, 'type');
-      if (!element) return { success: false, error: 'Element not found for typing', selector };
-      
-      element.focus();
-      element.value = text;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return { success: true, action: 'type', xpath: generateXPathForElement(element), text, selector };
-    },
-    
-    scroll: (direction = 'down', amount = 300) => {
-      const scrollAmount = direction === 'up' ? -amount : amount;
-      window.scrollBy(0, scrollAmount);
-      return { success: true, action: 'scroll', direction, amount };
-    },
-    
-    wait: (ms = 1000) => {
-      return new Promise(resolve => {
-        setTimeout(() => resolve({ success: true, action: 'wait', duration: ms }), ms);
-      });
-    }
-  };
-  
-  // Helper function to generate XPath for any element
-  function generateXPathForElement(element) {
-    if (!element) return null;
-    
-    if (element.id) {
-      return `//*[@id="${element.id}"]`;
-    }
-    
-    const parts = [];
-    let current = element;
-    
-    while (current && current.nodeType === Node.ELEMENT_NODE) {
-      let tagName = current.tagName.toLowerCase();
-      let selector = tagName;
-      
-      if (current.parentNode) {
-        const siblings = Array.from(current.parentNode.children)
-          .filter(sibling => sibling.tagName.toLowerCase() === tagName);
-        
-        if (siblings.length > 1) {
-          const index = siblings.indexOf(current) + 1;
-          selector += `[${index}]`;
-        }
-      }
-      
-      parts.unshift(selector);
-      current = current.parentNode;
-    }
-    
-    return '/' + parts.join('/');
-  }
-  
-  // Execute the action
-  if (xpathAutomation[action]) {
-    try {
-      const result = xpathAutomation[action](...Object.values(params || {}));
-      console.log('[XPathAutomation] Action completed:', result);
-      return result;
-    } catch (error) {
-      console.error('[XPathAutomation] Action execution error:', error);
-      return { success: false, error: 'XPath automation action failed: ' + error.message, action, params };
-    }
-  } else {
-    return { success: false, error: 'Unknown XPath automation action: ' + action, action, params };
-  }
-}
+// XPath automation moved to src/bg/automation/xpath-automation.js (global xpathAutomationScript & persistLastSelected)
 
 // Content script function for automation (defined globally for serialization)
 function automationContentScript(action, params) {
@@ -2518,117 +2203,8 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Chat Logging System
-class ChatLogger {
-  constructor() {
-    this.maxLogs = 1000; // Default max logs stored
-    this.storageKey = 'chatLogs';
-  }
-
-  async logChatInteraction(data) {
-    try {
-      const timestamp = new Date().toISOString();
-      const logEntry = {
-        id: this.generateLogId(),
-        timestamp,
-        provider: data.provider,
-        model: data.model,
-        prompt: data.prompt,
-        requestPayload: data.requestPayload,
-        response: data.response,
-        responseTime: data.responseTime,
-        success: data.success,
-        error: data.error,
-        source: data.source // 'popup', 'sidepanel', or 'mcp'
-      };
-
-      // Get existing logs
-      const result = await chrome.storage.local.get(this.storageKey);
-      let logs = result[this.storageKey] || [];
-
-      // Add new log
-      logs.unshift(logEntry);
-
-      // Maintain max logs limit
-      if (logs.length > this.maxLogs) {
-        logs = logs.slice(0, this.maxLogs);
-      }
-
-      // Store updated logs
-      await chrome.storage.local.set({ [this.storageKey]: logs });
-      
-      console.log('[ChatLogger] Interaction logged:', {
-        id: logEntry.id,
-        provider: data.provider,
-        model: data.model,
-        success: data.success
-      });
-    } catch (error) {
-      console.error('[ChatLogger] Failed to log interaction:', error);
-    }
-  }
-
-  async getLogs(filters = {}) {
-    try {
-      const result = await chrome.storage.local.get(this.storageKey);
-      let logs = result[this.storageKey] || [];
-
-      // Apply filters
-      if (filters.provider) {
-        logs = logs.filter(log => log.provider === filters.provider);
-      }
-      if (filters.success !== undefined) {
-        logs = logs.filter(log => log.success === filters.success);
-      }
-      if (filters.startDate) {
-        logs = logs.filter(log => new Date(log.timestamp) >= new Date(filters.startDate));
-      }
-      if (filters.endDate) {
-        logs = logs.filter(log => new Date(log.timestamp) <= new Date(filters.endDate));
-      }
-      if (filters.search) {
-        const searchLower = filters.search.toLowerCase();
-        logs = logs.filter(log => 
-          log.prompt?.toLowerCase().includes(searchLower) ||
-          log.response?.toLowerCase().includes(searchLower)
-        );
-      }
-
-      return logs;
-    } catch (error) {
-      console.error('[ChatLogger] Failed to get logs:', error);
-      return [];
-    }
-  }
-
-  async clearLogs() {
-    try {
-      await chrome.storage.local.remove(this.storageKey);
-      console.log('[ChatLogger] All logs cleared');
-    } catch (error) {
-      console.error('[ChatLogger] Failed to clear logs:', error);
-    }
-  }
-
-  async setMaxLogs(maxLogs) {
-    this.maxLogs = maxLogs;
-    // Trim existing logs if needed
-    const result = await chrome.storage.local.get(this.storageKey);
-    let logs = result[this.storageKey] || [];
-    
-    if (logs.length > maxLogs) {
-      logs = logs.slice(0, maxLogs);
-      await chrome.storage.local.set({ [this.storageKey]: logs });
-    }
-  }
-
-  generateLogId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2);
-  }
-}
-
-// Initialize global chat logger
-const chatLogger = new ChatLogger();
+// Chat Logging System moved to src/bg/logger.js
+// Global `chatLogger` and `agentLog` provided by importScripts('src/bg/logger.js')
 
 // Browser Automation System
 class BrowserAutomation {
@@ -2986,9 +2562,16 @@ class BrowserAutomation {
       const urlPattern = /https?:\/\/[^\s]+/g;
       const urls = command.match(urlPattern);
       
-      if (urls && urls.length > 1 && command.toLowerCase().includes('one by one')) {
-        console.log('🔗 Multi-URL sequential command detected:', urls.length, 'URLs');
-        return await this.executeSequentialUrlAutomation(command, urls, tabId);
+      if (urls && urls.length > 1) {
+        const multiUrlKeywords = ['tabs', 'links', 'all', 'each', 'enroll', 'sequential', 'one by one'];
+        const hasMultiUrlIntent = multiUrlKeywords.some(keyword => 
+          command.toLowerCase().includes(keyword)
+        );
+        
+        if (hasMultiUrlIntent) {
+          console.log('🔗 Multi-URL sequential command detected:', urls.length, 'URLs');
+          return await this.executeSequentialUrlAutomation(command, urls, tabId);
+        }
       }
       
       // Get page context for better planning
@@ -3102,87 +2685,78 @@ class BrowserAutomation {
   }
 
   async executeSequentialUrlAutomation(command, urls, initialTabId) {
-    console.log('🔄 Starting sequential URL automation with', urls.length, 'URLs');
-    
-    // Analyze the command to understand what actions to perform
+    sendProgressMessageToPanel(`\n---\nStarting Udemy automation for ${urls.length} URLs...`);
     const automationIntent = this.analyzeAutomationIntent(command, urls);
-    console.log('🧠 Detected automation intent:', automationIntent);
-    
+    sendProgressMessageToPanel(`Intent analyzed. Actions: ${automationIntent.actions.length > 0 ? automationIntent.actions.join(', ') : 'navigation only'}`);
     const results = [];
     let currentTabId = initialTabId;
-    
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
-      console.log(`🌐 Processing URL ${i + 1}/${urls.length}: ${url}`);
-      
+      sendProgressMessageToPanel(`\nSTEP ${i + 1}/${urls.length}: Opening course URL\n${url}`);
       try {
-        // Open each URL in a new tab (background by default). This ensures strict ordering
-        // and avoids reusing the current tab (user expects new tabs for each URL).
-        // If you want the tab to open in foreground, set `active: true` or wire to settings.
-  // Use configured foreground/background behavior when opening sequential tabs
-  const openActive = !!this.openTabsInForeground;
-  const newTab = await chrome.tabs.create({ url: url, active: openActive });
+        const openActive = !!this.openTabsInForeground;
+        const newTab = await chrome.tabs.create({ url: url, active: openActive });
         currentTabId = newTab.id;
-        
-        // Wait for page to load
-        console.log('⏳ Waiting for page to load...');
+        sendProgressMessageToPanel(`Tab opened. Waiting for page to load...`);
         await this.waitForPageLoad(currentTabId);
-        
-        // Wait an additional moment for dynamic content
+        sendProgressMessageToPanel(`Page loaded. Waiting for dynamic content...`);
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Perform automation actions based on detected intent
+        sendProgressMessageToPanel(`Performing automation actions...`);
         let automationResult;
         if (automationIntent.actions.length > 0) {
-          console.log(`🤖 Performing ${automationIntent.actions.length} automation actions on page...`);
           automationResult = await this.performDynamicAutomation(currentTabId, automationIntent, url);
         } else {
-          // Just navigation if no specific actions detected
           automationResult = {
             success: true,
             details: 'Successfully navigated to page'
           };
         }
-        
         results.push({
           url: url,
           success: automationResult.success,
           action: automationIntent.type || 'navigation',
           details: automationResult.details || automationResult.error
         });
-
-        // Log result but continue with remaining URLs (don't break the sequence)
         if (!automationResult.success) {
-          console.warn('⚠️ Automation failed for URL, but continuing with remaining URLs:', url);
-          console.warn('⚠️ Error details:', automationResult.details || automationResult.error);
+          sendProgressMessageToPanel(`❌ Automation failed for this course: ${automationResult.details || automationResult.error}`);
         } else {
-          console.log(`✅ Completed processing URL ${i + 1}: ${url}`);
+          sendProgressMessageToPanel(`✅ Enrollment action succeeded: ${automationResult.details}`);
+          sendProgressMessageToPanel(`Checking for follow-up actions...`);
+          const followUpResult = await this.checkForFollowUpActions(currentTabId, url, 3000);
+          if (followUpResult && followUpResult.additionalActionsNeeded) {
+            sendProgressMessageToPanel('Follow-up actions detected, performing...');
+            const followUpAutomation = await this.performDynamicAutomation(currentTabId, {
+              type: 'follow_up_automation',
+              originalCommand: command,
+              context: 'post_enrollment_check'
+            }, url);
+            if (followUpAutomation && followUpAutomation.success) {
+              sendProgressMessageToPanel('✅ Follow-up automation completed successfully');
+            } else {
+              sendProgressMessageToPanel('⚠️ Follow-up automation failed or not needed');
+            }
+          }
         }
-        
-        // Brief pause between URLs to avoid overwhelming the browser
         if (i < urls.length - 1) {
+          sendProgressMessageToPanel('Pausing briefly before next course...');
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        
       } catch (error) {
-        console.error(`❌ Error processing URL ${i + 1} (${url}):`, error);
+        sendProgressMessageToPanel(`❌ Error processing course: ${error.message}`);
         results.push({
           url: url,
           success: false,
           action: 'error',
           details: error.message
         });
-        // Continue with next URL instead of breaking
-        console.log('🔄 Continuing with next URL despite error...');
+        sendProgressMessageToPanel('Continuing with next course...');
       }
     }
     
     // Summary
     const successful = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
-    
-    console.log(`🎯 Sequential automation completed: ${successful} successful, ${failed} failed`);
-    
+    sendProgressMessageToPanel(`\n---\n🎯 Udemy automation completed: ${successful} successful, ${failed} failed.\n`);
     return {
       success: true,
       type: 'sequential-url-automation',
@@ -3262,6 +2836,9 @@ class BrowserAutomation {
       console.log('🎯 Starting LLM-driven automation on:', url);
       console.log('🎯 User intent:', intent);
       
+      // Store URL for fallback usage
+      this.lastProcessedUrl = url;
+      
       // Extract page content for LLM analysis
       const pageContent = await this.getPageHTMLForLLM(tabId);
       if (!pageContent) {
@@ -3284,7 +2861,7 @@ class BrowserAutomation {
       
       // Query LLM for automation analysis
       console.log('🤖 Sending request to LLM...');
-      const llmResponse = await this.queryLLMForAutomation(prompt);
+      const llmResponse = await this.queryLLMForAutomation(prompt, intent);
       
       if (!llmResponse) {
         console.error('❌ LLM returned null response');
@@ -3495,6 +3072,31 @@ If no additional actions are needed, return an empty actions array.`;
         };
       }
       
+      // Check for follow-up action keywords first
+      const followUpKeywords = responseContent.toLowerCase();
+      if (followUpKeywords.includes('continue') || followUpKeywords.includes('proceed') || 
+          followUpKeywords.includes('checkout') || followUpKeywords.includes('add to cart') ||
+          followUpKeywords.includes('complete') || followUpKeywords.includes('confirm')) {
+        return {
+          type: "click",
+          element_text: "Continue",
+          selector: "button:contains('Continue'), button:contains('Proceed'), button:contains('Add to cart'), button:contains('Checkout'), .btn:contains('Complete'), button:contains('Confirm')",
+          reason: "Follow-up action detected in LLM reasoning",
+          priority: "high"
+        };
+      }
+      
+      // If no follow-up patterns found, look for enrollment keywords
+      if (followUpKeywords.includes('enroll') || followUpKeywords.includes('purchase') || followUpKeywords.includes('buy now')) {
+        return {
+          type: "click",
+          element_text: "Enroll now",
+          selector: "button[data-purpose='enroll-now-button'], .ud-btn-primary, button:contains('Enroll'), button:contains('Buy now')",
+          reason: "Enrollment action detected in LLM reasoning",
+          priority: "high"
+        };
+      }
+      
       return null;
     } catch (error) {
       console.warn('❌ Fallback action extraction failed:', error);
@@ -3591,89 +3193,166 @@ If no additional actions are needed, return an empty actions array.`;
     const domain = this.extractDomain(pageUrl);
     const websiteContext = this.analyzeWebsiteContext(domain, pageContent.title, pageContent.innerHTML);
     
-    return `You are an advanced web automation strategist with deep understanding of website patterns and user intent. Analyze the situation with precision and strategic thinking.
+    // Truncate HTML content to stay within token limits (keep it under 1000 chars)
+    let htmlContent = pageContent.innerHTML || '';
+    if (htmlContent.length > 1000) {
+      // Extract key interactive elements instead of full HTML
+      htmlContent = this.extractKeyElements(htmlContent);
+    }
+    
+    return `You are an advanced web automation strategist. Analyze and provide automation actions.
 
-## MISSION ANALYSIS
-**User Command**: "${commandText}"
-**Target Website**: ${pageUrl} (Domain: ${domain})
-**Page Title**: ${pageContent.title}
-**Available Elements**: ${pageContent.elementsFound} interactive elements (${pageContent.buttonsFound} buttons, ${pageContent.linksFound} links)
+## MISSION
+**Command**: "${commandText}"
+**URL**: ${pageUrl}
+**Title**: ${pageContent.title}
+**Elements**: ${pageContent.elementsFound} interactive (${pageContent.buttonsFound} buttons, ${pageContent.linksFound} links)
+**Context**: ${intent.context === 'post_enrollment_check' ? 'FOLLOW-UP ACTIONS after enrollment click' : 'INITIAL ENROLLMENT'}
 
-## WEBSITE CONTEXT ANALYSIS
-${websiteContext.analysis}
+## CONTEXT
+Domain: ${domain} (${websiteContext.type})
+Patterns: ${websiteContext.patterns.slice(0, 3).join(', ')}
 
-**Website Type**: ${websiteContext.type}
-**Common Patterns**: ${websiteContext.patterns.join(', ')}
-**Expected User Flows**: ${websiteContext.userFlows.join(', ')}
+## KEY PAGE ELEMENTS (truncated)
+${htmlContent}
 
-## STRATEGIC THINKING PROCESS
-Think through this step by step:
-
-1. **Command Intent Analysis**: 
-   - What is the user's ultimate goal?
-   - What type of action does this command indicate? (navigation, interaction, data entry, purchase, enrollment, etc.)
-   - Are there cultural or language nuances in the command?
-
-2. **Website Intelligence**:
-   - How does this type of website typically implement the requested functionality?
-   - What are the standard UI patterns for this domain/industry?
-   - Where would users typically find this functionality on this type of site?
-
-3. **Contextual Element Matching**:
-   - Which elements align with both the command intent AND website patterns?
-   - What are the most reliable selectors for this type of action on this domain?
-   - Are there multiple steps typically required for this type of action?
-
-4. **Risk Assessment**:
-   - Could this action have unintended consequences?
-   - Are there confirmation steps typically required?
-   - What would happen if the wrong element is clicked?
-
-## PAGE HTML CONTENT
-${pageContent.innerHTML}
-
-## STRATEGIC AUTOMATION PLAN
-Based on your analysis, provide a detailed automation strategy. Consider:
-
-- **Primary Action**: The most direct element to accomplish the user's goal
-- **Fallback Options**: Alternative elements if the primary fails
-- **Context Validation**: How to verify we're taking the right action
-- **Next Steps**: What typically happens after this action on this type of site
-
-Return a JSON response with this EXACT format:
-
+## RESPONSE FORMAT
+Return JSON with this EXACT structure:
 {
   "strategic_analysis": {
-    "command_intent": "detailed analysis of what the user wants to accomplish",
-    "website_intelligence": "insights about how this type of site works",
-    "recommended_approach": "strategic reasoning for the chosen approach"
+    "command_intent": "what user wants to accomplish",
+    "website_intelligence": "how this site type works", 
+    "recommended_approach": "strategic reasoning"
   },
   "actions": [
     {
-      "type": "click|type|select|submit|wait",
-      "element_text": "exact text content of the element",
-      "selector": "most reliable CSS selector or xpath",
-      "reason": "detailed explanation connecting user intent + website patterns + element analysis",
+      "type": "click|type|select",
+      "element_text": "exact element text",
+      "selector": "CSS selector",
+      "reason": "why this element accomplishes the goal",
       "priority": "high|medium|low",
-      "confidence": "percentage confidence in this action",
-      "validation_criteria": "how to verify this action was successful",
-      "expected_outcome": "what should happen after this action"
+      "confidence": "85",
+      "validation_criteria": "how to verify success",
+      "expected_outcome": "what happens next"
     }
-  ],
-  "reasoning": "comprehensive strategic analysis of your decision-making process",
-  "risk_assessment": "potential issues and how to mitigate them",
-  "next_steps": "what actions might be needed after this one"
+  ]
 }
 
-## CRITICAL REQUIREMENTS
-- Use TEMPERATURE 0 thinking: Be precise, deterministic, and analytical
-- Prioritize reliability over speed
-- Consider the full user journey, not just the immediate action
-- Account for website-specific patterns and behaviors
-- Provide detailed reasoning for all decisions
-- Think like an expert who understands both automation and user experience
+${intent.context === 'post_enrollment_check' ? 
+`Focus on FOLLOW-UP ACTIONS after enrollment:
+- "Continue" or "Proceed" buttons
+- "Complete enrollment" buttons
+- "Add to cart" or "Checkout" buttons
+- "Confirm" or "Submit" buttons
+- Login/registration forms if needed
+- Payment continuation if required` :
+`Focus on finding enrollment/buy buttons for Udemy courses. Common patterns:
+- "Enroll now" buttons
+- "Buy now" buttons  
+- ".btn-primary" classes
+- Course pricing areas`}`;
+  }
 
-Execute your analysis with maximum precision and strategic depth.`;
+  // Extract key interactive elements from HTML content
+  extractKeyElements(htmlContent) {
+    // Look for key patterns related to enrollment/purchase
+    const keyPatterns = [
+      /enroll\s+now/gi,
+      /buy\s+now/gi,
+      /get\s+course/gi,
+      /add\s+to\s+cart/gi,
+      /purchase/gi,
+      /btn[^>]*primary/gi,
+      /button[^>]*primary/gi,
+      /<button[^>]*>[^<]*enroll[^<]*<\/button>/gi,
+      /<button[^>]*>[^<]*buy[^<]*<\/button>/gi,
+      /<a[^>]*>[^<]*enroll[^<]*<\/a>/gi
+    ];
+    
+    let extractedContent = '';
+    
+    // Extract matching segments
+    for (const pattern of keyPatterns) {
+      const matches = htmlContent.match(pattern);
+      if (matches) {
+        extractedContent += matches.slice(0, 3).join('\n') + '\n'; // Limit to 3 matches per pattern
+      }
+    }
+    
+    // If no key patterns found, extract button elements
+    if (extractedContent.length < 50) {
+      const buttonMatches = htmlContent.match(/<button[^>]*>.*?<\/button>/gi);
+      if (buttonMatches) {
+        extractedContent += buttonMatches.slice(0, 5).join('\n');
+      }
+    }
+    
+    // Fallback: extract first 500 chars if still empty
+    if (extractedContent.length < 50) {
+      extractedContent = htmlContent.substring(0, 500) + '...';
+    }
+    
+    return extractedContent.substring(0, 1000); // Ensure we stay under limit
+  }
+
+  // Check if additional actions are needed after automation (e.g., checkout, confirmation)
+  async checkForFollowUpActions(tabId, url, waitTime = 3000) {
+    try {
+      console.log('⏳ Waiting for page changes after automation...');
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      // Get current page content to analyze
+      const pageContent = await this.getPageHTMLForLLM(tabId);
+      if (!pageContent) {
+        console.log('❌ Could not extract page content for follow-up check');
+        return { additionalActionsNeeded: false };
+      }
+      
+      console.log('🔍 Analyzing page for follow-up actions...', pageContent.title);
+      
+      // Check for common follow-up scenarios
+      const keyElements = this.extractKeyElements(pageContent.htmlContent || '');
+      const followUpIndicators = [
+        // Checkout/payment indicators
+        /checkout|payment|billing|card/gi,
+        /proceed|continue|confirm|complete/gi,
+        /add.*cart|shopping.*cart/gi,
+        /place.*order|finalize|submit.*order/gi,
+        // Login/registration indicators  
+        /sign.*in|log.*in|register|create.*account/gi,
+        /email.*password|username.*password/gi,
+        // Course enrollment continuation
+        /complete.*enrollment|finish.*registration/gi,
+        /start.*course|access.*course/gi
+      ];
+      
+      let indicatorsFound = [];
+      followUpIndicators.forEach((pattern, index) => {
+        if (pattern.test(keyElements)) {
+          indicatorsFound.push({
+            type: index < 4 ? 'checkout' : (index < 6 ? 'auth' : 'enrollment'),
+            pattern: pattern.source
+          });
+        }
+      });
+      
+      if (indicatorsFound.length > 0) {
+        console.log('🎯 Follow-up indicators found:', indicatorsFound);
+        return {
+          additionalActionsNeeded: true,
+          indicators: indicatorsFound,
+          pageTitle: pageContent.title,
+          url: url
+        };
+      }
+      
+      console.log('✅ No additional actions needed - enrollment appears complete');
+      return { additionalActionsNeeded: false };
+      
+    } catch (error) {
+      console.error('❌ Error checking for follow-up actions:', error);
+      return { additionalActionsNeeded: false };
+    }
   }
 
   // Helper methods for intelligent website context analysis
@@ -3815,7 +3494,7 @@ Execute your analysis with maximum precision and strategic depth.`;
            newsKeywords.some(k => title.includes(k) || content.includes(k));
   }
 
-  async queryLLMForAutomation(prompt) {
+  async queryLLMForAutomation(prompt, userIntent = null) {
     try {
       // Use the same LLM settings as configured in the extension
       const mcpRequest = {
@@ -3840,12 +3519,22 @@ Execute your analysis with maximum precision and strategic depth.`;
       const response = await this.sendLLMRequest(prompt);
       console.log('🤖 LLM response received:', response);
       
+      // Check if response has content or reasoning field
+      let responseText = null;
       if (response && response.content) {
-        console.log('🤖 LLM Strategic Analysis Response Length:', response.content.length);
-        console.log('🤖 Response content preview:', response.content.substring(0, 500));
+        responseText = response.content;
+        console.log('🤖 LLM Strategic Analysis Response Length:', responseText.length);
+        console.log('🤖 Response content preview:', responseText.substring(0, 500));
+      } else if (response && response.reasoning) {
+        responseText = response.reasoning;
+        console.log('🤖 LLM reasoning field found, length:', responseText.length);
+        console.log('🤖 Response reasoning preview:', responseText.substring(0, 500));
+      }
+      
+      if (responseText) {
         try {
           // Try to parse JSON response with better error handling
-          let jsonContent = response.content;
+          let jsonContent = responseText;
           
           // Clean up any HTML-like tags or token markers first
           jsonContent = jsonContent.replace(/^(<s>|<\/s>|<\w+>|<\/\w+>|\s)+/g, '');
@@ -3911,11 +3600,11 @@ Execute your analysis with maximum precision and strategic depth.`;
           }
         } catch (e) {
           console.warn('❌ Could not parse strategic LLM JSON response:', e);
-          console.warn('❌ Response content was:', response.content);
+          console.warn('❌ Response content was:', responseText);
           
           // Enhanced fallback for strategic analysis
           try {
-            const fallbackAction = this.extractFallbackAction(response.content);
+            const fallbackAction = this.extractFallbackAction(responseText);
             if (fallbackAction) {
               console.log('🔄 Using fallback action extraction from strategic response:', fallbackAction);
               return { 
@@ -3933,10 +3622,52 @@ Execute your analysis with maximum precision and strategic depth.`;
           }
         }
       } else {
-        console.warn('❌ Strategic LLM analysis response missing content:', response);
+        console.warn('❌ Strategic LLM analysis response missing both content and reasoning:', response);
+        
+        // Check if response was truncated (finish_reason: 'length' with empty content)
+        if (response.choices && response.choices[0] && 
+            response.choices[0].finish_reason === 'length' && 
+            (!response.choices[0].message.content || response.choices[0].message.content.trim() === '')) {
+          console.warn('🔄 LLM response was truncated due to token limit, using immediate fallback');
+        }
       }
       
       console.warn('❌ Invalid LLM response for automation');
+      
+
+      // --- Udemy-specific fallback when LLM fails ---
+      // This fallback is triggered if the LLM response is invalid or truncated.
+      // It attempts to click the most likely Udemy enrollment/continue buttons using robust selectors.
+      if (this.lastProcessedUrl && this.lastProcessedUrl.includes('udemy.com')) {
+        console.log('🔄 Using Udemy-specific fallback enrollment action');
+
+        // Ensure userIntent is always defined for robustness
+        const safeUserIntent = userIntent || {};
+        // Determine if this is a follow-up action or initial enrollment
+        const isFollowUp = safeUserIntent.context === 'post_enrollment_check';
+
+        return {
+          actions: [{
+            type: "click",
+            element_text: isFollowUp ? "Continue" : "Enroll now",
+            selector: isFollowUp ?
+              "button:contains('Continue'), button:contains('Proceed'), button:contains('Add to cart'), button:contains('Checkout'), .btn:contains('Complete'), button:contains('Confirm')" :
+              "button[data-purpose='enroll-now-button'], .ud-btn-primary, button:contains('Enroll'), button:contains('Buy now'), button:contains('Add to cart'), [data-purpose='buy-this-course-button'], .buy-box .btn-primary, .purchase-section button",
+            reason: isFollowUp ? "Fallback follow-up action detection" : "Enhanced fallback Udemy enrollment button detection",
+            priority: "high",
+            confidence: 80,
+            validation_criteria: isFollowUp ? "Checkout/completion page or success confirmation" : "Page navigation or enrollment confirmation",
+            expected_outcome: isFollowUp ? "Enrollment process continued" : "Course enrollment initiated"
+          }],
+          reasoning: isFollowUp ? "Udemy follow-up fallback when LLM parsing fails" : "Enhanced Udemy-specific fallback when LLM parsing fails",
+          strategic_analysis: {
+            command_intent: isFollowUp ? "Continue Udemy enrollment process using fallback selectors" : "Enroll in Udemy course using enhanced fallback selectors",
+            website_intelligence: `Udemy.com - ${isFollowUp ? 'follow-up' : 'initial'} fallback mode using comprehensive selector patterns`,
+            recommended_approach: "Click enrollment button using multiple enhanced selector patterns including data attributes"
+          }
+        };
+      }
+      
       return null;
       
     } catch (error) {
@@ -4594,8 +4325,9 @@ Execute your analysis with maximum precision and strategic depth.`;
       try {
         const tab = await chrome.tabs.get(tabId);
         
-        // Skip check for restricted pages
-        if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('https://') || tab.url.startsWith('http://')) {
+        // Skip check for restricted pages only (allow http/https)
+        if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+          console.log('🔒 Restricted page detected, readiness check skipped:', tab.url);
           return false;
         }
         
@@ -4617,8 +4349,15 @@ Execute your analysis with maximum precision and strategic depth.`;
               console.log(`✅ Page ready for action: ${tab.url}`);
               return true;
             }
+            console.log('⏳ Not ready yet:', {
+              url: tab.url,
+              status: tab.status,
+              readyState: result?.result?.readyState,
+              hasBody: result?.result?.hasBody,
+              bodyChildren: result?.result?.bodyChildren
+            });
           } catch (scriptError) {
-            console.log('📄 Page not yet interactive, waiting...');
+            console.log('📄 Page not yet interactive (script error), waiting...', scriptError?.message);
           }
         }
         
@@ -6863,47 +6602,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === 'automationCommand') {
-      console.log('🤖 AUTOMATION: Received automation command:', request.command);
-      
-      // Get active tab first, then execute automation
+      console.log('🤖 AUTOMATION: Received automation command (compat shim):', request.command);
+      // Bridge legacy automationCommand into deterministic intent-first flow
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        console.log('🤖 AUTOMATION: Found tabs:', tabs.length);
-        const activeTab = tabs[0];
+        const activeTab = tabs && tabs[0];
         if (!activeTab) {
           console.log('🤖 AUTOMATION: No active tab found');
           sendResponse({ success: false, error: 'No active tab found' });
           return;
         }
-        
-        console.log('🤖 AUTOMATION: Active tab:', activeTab.id, activeTab.url);
-        console.log('🤖 AUTOMATION: Calling browserAutomation.executeCommand...');
-        
-        browserAutomation.executeCommand(request.command, activeTab.id).then(result => {
-          console.log('🤖 AUTOMATION: Command executed successfully:', result);
-          
-          // Enhanced response with element information
-          let responseMessage = "Command completed";
-          if (result && result.message) {
-            responseMessage = result.message;
-          } else if (result && result.elementInfo) {
-            const elem = result.elementInfo;
-            responseMessage = `${result.action || 'Action'} performed on ${elem.tagName}${elem.id ? ' #' + elem.id : ''}${elem.text ? ' ("' + elem.text.substring(0, 50) + '...")' : ''}`;
-          } else if (result && result.action) {
-            responseMessage = `${result.action} completed`;
-          }
-          
-          sendResponse({ 
-            success: true, 
-            result: result || {},
-            message: responseMessage,
-            elementInfo: (result && result.elementInfo) || null
+        handleAgentUserCommand(String(request.command || '').trim(), activeTab.id, activeTab.url)
+          .then(resp => sendResponse(resp))
+          .catch(err => {
+            console.error('🤖 AUTOMATION: Compat handler failed:', err);
+            sendResponse({ success: false, error: err && err.message });
           });
-        }).catch(error => {
-          console.error('🤖 AUTOMATION: Command execution failed:', error);
-          sendResponse({ success: false, error: error.message });
-        });
       });
-      return true; // Keep message channel open for async response
+      return true; // async response
     }
 
     if (request.action === 'getAutomationNotes') {
