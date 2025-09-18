@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChromeAiAgent (Dev)",
-  "version": "2.3.0",
+  "version": "2.3.3",
   "description": "AI agent interface with support for multiple online LLM providers - Development Version",
   "permissions": [
     "storage",
